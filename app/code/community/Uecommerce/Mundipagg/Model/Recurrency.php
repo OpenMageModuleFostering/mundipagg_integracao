@@ -80,7 +80,7 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
         $this->_item = $item;
         
         $this->_product = Mage::getModel('catalog/product')->load($item->getProductId());
-
+        
 
         if ($this->_product->getMundipaggRecurrent() && $this->isRecurrent()) {
             $this->_setRecurrencyByProduct($this->_product);
@@ -193,10 +193,6 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
         $date = new Zend_Date(Mage::getModel('core/date')->timestamp(), Zend_Date::TIMESTAMP);
 
         switch ($frequency) {
-	        case '0':
-	        	$frequency = null;
-	        	break;
-
             case 'Daily':
                 $frequency = 'Day';
                 break;
@@ -213,9 +209,7 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
 
         $function = 'add' . $frequency;
 
-	    if(is_null($frequency) === false){
-		    $date->{$function}($interval);
-	    }
+        $date->{$function}($interval);
 
         return $date->toString('yyyy-MM-ddTHH:mm:ss');
     }

@@ -63,8 +63,9 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 				$model = Mage::getModel('mundipagg/offlineretry');
 				$incrementId = $order->getIncrementId();
 				$offlineRetry = $model->loadByIncrementId($incrementId);
+				$offlineRetryData =$offlineRetry->getData();
 
-				if (is_null($offlineRetry->getId()) === false) {
+				if (!empty($offlineRetryData)) {
 					$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
 					$helperLog->setLogLabel("Order #{$incrementId} canceled");
 
@@ -84,14 +85,6 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	}
 
 	private function cancelOrderViaApi(Mage_Sales_Model_Order $order) {
-		$standard = new Uecommerce_Mundipagg_Model_Standard();
-
-		if($standard->getCanceledByNotificationFlag($order)){
-			return;
-		} else {
-			unset($standard);
-		}
-
 		$payment = $order->getPayment();
 		$paymentMethod = $payment->getAdditionalInformation('PaymentMethod');
 		$allowedPaymentMethods = array(
@@ -127,13 +120,35 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	 * Update status
 	 * */
 	public function updateStatus($event) {
+		$standard = Mage::getModel('mundipagg/standard');
+
+		$paymentAction = $standard->getConfigData('payment_action');
+
 		$method = $event->getOrder()->getPayment()->getAdditionalInformation('PaymentMethod');
+
+		// If it's a multi-payment types we force to ACTION_AUTHORIZE
+		$num = substr($method, 0, 1);
+
+		if ($num > 1) {
+			$paymentAction = Mage_Payment_Model_Method_Abstract::ACTION_AUTHORIZE;
+		}
+
 		$approvalRequestSuccess = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
 		if ($method == 'mundipagg_boleto' && $approvalRequestSuccess != 'cancel') {
 			$comment = Mage::helper('mundipagg')->__('Waiting for Boleto Bancário payment');
 
 			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_HOLDED, true, $comment, false);
+		}
+
+		if ($method != 'mundipagg_boleto' && $paymentAction == 'authorize' && $approvalRequestSuccess == 'partial') {
+			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_NEW, 'pending', '', false);
+		}
+
+		if ($method != 'mundipagg_boleto' && $paymentAction == 'authorize' && $approvalRequestSuccess == 'success') {
+			$comment = Mage::helper('mundipagg')->__('Authorized');
+
+			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_NEW, 'pending', $comment, false);
 		}
 	}
 
@@ -165,14 +180,14 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 		$result = $event->getResult();
 		$isPartial = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
-		if ($isPartial === 'partial') {
+		if ($isPartial == 'partial') {
 			switch ($method->getCode()) {
 				case 'mundipagg_creditcardoneinstallment':
 				case 'mundipagg_creditcard':
-//				case 'mundipagg_twocreditcards':
-//				case 'mundipagg_threecreditcards':
-//				case 'mundipagg_fourcreditcards':
-//				case 'mundipagg_fivecreditcards':
+				case 'mundipagg_twocreditcards':
+				case 'mundipagg_threecreditcards':
+				case 'mundipagg_fourcreditcards':
+				case 'mundipagg_fivecreditcards':
 					$active = Mage::getStoreConfig('payment/' . $method->getCode() . '/active');
 
 					if ($active == '1') {
@@ -210,10 +225,29 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	 * Check if recurrency product is in cart in order to show only Mundipagg Credit Card payment
 	 */
 	public function checkForRecurrency($observer) {
-		$session = Mage::getSingleton('checkout/session');
-		$recurrent = $session->getMundipaggRecurrency();
+		$recurrent = 0;
 
-		if ($recurrent) {
+		$session = Mage::getSingleton('admin/session');
+
+		if ($session->isLoggedIn()) {
+			$quote = Mage::getSingleton('adminhtml/session_quote')->getQuote();
+		} else {
+			$quote = Mage::getSingleton('checkout/session')->getQuote();
+		}
+
+		$cartItems = $quote->getAllVisibleItems();
+
+		foreach ($cartItems as $item) {
+			$productId = $item->getProductId();
+
+			$product = Mage::getModel('catalog/product')->load($productId);
+
+			if ($product->getMundipaggRecurrent()) {
+				$recurrent++;
+			}
+		}
+
+		if ($recurrent > 0) {
 			$instance = $observer->getMethodInstance();
 			$result = $observer->getResult();
 
@@ -379,61 +413,6 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 			throw new Mage_Adminhtml_Exception($errMsg);
 		}
 
-	}
-
-	public function checkRecurrencyFrequency(Varien_Event_Observer $observer) {
-		$product = $observer->getProduct();
-		$recurrent = (boolean)$product->getData('mundipagg_recurrent');
-		$frequency = $product->getData('mundipagg_frequency_enum');
-
-		if ($recurrent === true && $frequency == '0') {
-			$helper = Mage::helper('mundipagg');
-			$errMsg = $helper->__('Recurrency frequency is required');
-
-			Mage::throwException($errMsg);
-		}
-	}
-
-	/**
-	 * @param Varien_Event $event
-	 */
-	public function cartCheckRecurrency($event) {
-		/* @var Mage_Checkout_Model_Cart $cart */
-		$cart = $event->getCart();
-
-		/* @var Mage_Sales_Model_Quote $quote */
-		$quote = $cart->getQuote();
-
-		/* @var Mage_Sales_Model_Resource_Quote_Item_Collection $items */
-		$items = $quote->getAllItems();
-
-		/* @var Mage_Sales_Model_Quote_Item $item */
-		foreach ($items as $item) {
-
-			/* @var Mage_Sales_Model_Quote_Item_Option $option */
-			foreach ($item->getOptions() as $option) {
-				/* @var Mage_Catalog_Model_Product $product */
-				$product = $option->getProduct();
-				$product->load($product->getId());
-
-				if ($product->getMundipaggRecurrent()) {
-					$this->setQuoteRecurrencyFlag(true);
-
-					return;
-				}
-			}
-		}
-
-		$this->setQuoteRecurrencyFlag(false);
-	}
-
-	/**
-	 * @param boolean $option
-	 *
-	 */
-	private function setQuoteRecurrencyFlag($option) {
-		$session = Mage::getSingleton('checkout/session');
-		$session->setMundipaggRecurrency($option);
 	}
 
 }

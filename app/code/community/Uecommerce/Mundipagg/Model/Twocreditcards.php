@@ -188,11 +188,8 @@ class Uecommerce_Mundipagg_Model_Twocreditcards extends Uecommerce_Mundipagg_Mod
         $this->setCreditCardOperationEnum('AuthAndCapture');
         
         $payment = $this->getInfoInstance();
-        $order = $payment->getOrder();               
+        $order = $payment->getOrder();
 
         parent::authorize($payment, $order->getBaseTotalDue());
-        
-        $stateObject->setState($order->getState());
-        $stateObject->setStatus($order->getStatus());
     }
 }

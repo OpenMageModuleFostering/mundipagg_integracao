@@ -2,9 +2,8 @@
 
 class Uecommerce_Mundipagg_Model_Order_Payment {
 
-	const ERR_CANNOT_CREATE_INVOICE                  = "Cannot create invoice";
-	const ERR_CANNOT_CREATE_INVOICE_WITHOUT_PRODUCTS = "Cannot create invoice without products";
-	const ERR_UNEXPECTED_ERROR                       = "Unexpected error";
+	const ERR_CANNOT_CREATE_INVOICE                  = 1;
+	const ERR_CANNOT_CREATE_INVOICE_WITHOUT_PRODUCTS = 2;
 
 	/**
 	 * @param Mage_Sales_Model_Order $order
@@ -16,11 +15,6 @@ class Uecommerce_Mundipagg_Model_Order_Payment {
 		if (!$order->canInvoice()) {
 			Mage::throwException(self::ERR_CANNOT_CREATE_INVOICE);
 		}
-
-		// reset total paid because invoice generation set order total_paid also
-		$order->setBaseTotalPaid(null)
-			->setTotalPaid(null)
-			->save();
 
 		$invoice = Mage::getModel('sales/service_order', $order)->prepareInvoice();
 
@@ -46,57 +40,8 @@ class Uecommerce_Mundipagg_Model_Order_Payment {
 			Mage::throwException($e->getMessage());
 		}
 
-		$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-		$log->info("#{$order->getIncrementId()} | invoice created {$invoice->getIncrementId()}");
-
 		return $invoice;
-	}
 
-	/**
-	 * @param Mage_Sales_Model_Order              $order
-	 * @param Uecommerce_Mundipagg_Model_Standard $standard
-	 * @return Mage_Sales_Model_Order_Invoice
-	 */
-	public function orderPaid(Mage_Sales_Model_Order $order, Uecommerce_Mundipagg_Model_Standard $standard) {
-		try {
-			$invoice = $this->createInvoice($order, $standard);
-
-			$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-			$log->setLogLabel("#{$order->getIncrementId()}");
-
-			$standard->closeAuthorizationTxns($order);
-			$log->info("Authorization transactions closed");
-
-			return $invoice;
-
-		} catch (Exception $e) {
-			Mage::throwException($e);
-		}
-	}
-
-	public function orderOverpaid(Mage_Sales_Model_Order $order) {
-		try {
-			$order->setStatus('overpaid')
-				->save();
-		} catch (Exception $e) {
-			Mage::throwException($e);
-		}
-	}
-
-	public function orderUnderPaid(Mage_Sales_Model_Order $order, $amountToPaid = null) {
-		try {
-			$order->setStatus('underpaid');
-
-			if (is_null($amountToPaid) === false) {
-				$order->setBaseTotalPaid($amountToPaid)
-					->setTotalPaid($amountToPaid);
-			}
-
-			$order->save();
-
-		} catch (Exception $e) {
-			Mage::throwException($e);
-		}
 	}
 
 }
