@@ -609,28 +609,33 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 					return $this;
 				}
 			} else {
-				// Send new order email when not in admin
-				if (Mage::app()->getStore()->getCode() != 'admin') {
-					$order->sendNewOrderEmail();
-				}
-
 				$accPaymentAuthorizationAmount = sprintf($order->getPaymentAuthorizationAmount());
 				$accGrandTotal = sprintf($order->getGrandTotal());
+                                
+				// Send new order email when not in admin
+				if ((Mage::app()->getStore()->getCode() != 'admin') && ($accPaymentAuthorizationAmount == $accGrandTotal)) {
+					$order->sendNewOrderEmail();
+				}
 
 				// We can capture only if:
 				// 1. Multiple Credit Cards Payment
 				// 2. Anti fraud is disabled
 				// 3. Payment action is "AuthorizeAndCapture"
 				// 4. Authorization amount is equal to grand_total
-				if (count($ccResultCollection) > 1
+				if (
+                                        count($ccResultCollection) > 1
 					&& $this->getAntiFraud() == 0
 					&& $this->getPaymentAction() == 'order'
 					&& $accPaymentAuthorizationAmount == $accGrandTotal
 				) {
 					$this->captureAndcreateInvoice($payment);
-				}
+				}else if ($accPaymentAuthorizationAmount != $accGrandTotal){
+                                    $order->cancel();
+                                    $order->setState(Mage_Sales_Model_Order::STATE_CANCELED, true)->save();                                    
+                                    $order->setStatus(Mage_Sales_Model_Order::STATE_CANCELED);
+                                    $order->save();
+                                }
 			}
-
 			return $this;
 
 		} catch (Exception $e) {
@@ -1292,7 +1297,7 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 					$orderResult = $helper->issetOr($result['OrderResult']);
 					$creditCardTransactionResultCollection = $result['CreditCardTransactionResultCollection'];
 					$transactionsQty = count($creditCardTransactionResultCollection);
-
+                                        
 					if ($transactionsQty == 1) {
 						$transaction = $creditCardTransactionResultCollection[0];
 						$success = $transaction['Success'];
@@ -1306,7 +1311,9 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 							if ($success === true) {
 								$authorizedAmount += $transaction['AuthorizedAmountInCents'] * 0.01;
-							}
+							}else{
+                                                            $unauthorizedCreditCardMaskedNumber = $transaction['MaskedCreditCardNumber'];
+                                                        }
 						}
 					}
 

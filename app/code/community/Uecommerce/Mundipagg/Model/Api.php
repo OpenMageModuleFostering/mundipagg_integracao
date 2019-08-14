@@ -1286,8 +1286,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 			if (isset($data['OrderStatus'])) {
 				$orderStatus = $data['OrderStatus'];
-				//if Magento order is not processing and MundiPagg order status is canceled, cancel the order on Magento
-				if ($order->getState() != Mage_Sales_Model_Order::STATE_PROCESSING && $orderStatus == Uecommerce_Mundipagg_Model_Enum_OrderStatusEnum::CANCELED) {
+
+				//if MundiPagg order status is canceled, cancel the order on Magento
+				if ($orderStatus == Uecommerce_Mundipagg_Model_Enum_OrderStatusEnum::CANCELED) {
 
 					if ($order->getState() == Mage_Sales_Model_Order::STATE_CANCELED) {
 						$returnMessage = "OK | {$returnMessageLabel} | Order already canceled.";
@@ -1539,7 +1540,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 						$order->unhold();
 					}
 
-					$success = false;
+					$ok = 0;
 					$invoices = array();
 					$canceledInvoices = array();
 
@@ -1556,16 +1557,44 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					}
 
 					// Refund invoices and Credit Memo
-					if (!empty($invoices) || !empty($canceledInvoices)) {
+					if (!empty($invoices)) {
 						$service = Mage::getModel('sales/service_order', $order);
 
 						foreach ($invoices as $invoice) {
-							$this->closeInvoice($invoice);
-                                                        $this->createCreditMemo($invoice, $service);
+							$invoice->setState(Mage_Sales_Model_Order_Invoice::STATE_CANCELED);
+							$invoice->save();
+
+							$creditmemo = $service->prepareInvoiceCreditmemo($invoice);
+							$creditmemo->setOfflineRequested(true);
+							$creditmemo->register()->save();
 						}
 
-						$this->closeOrder($order);
-						$success = true;
+						// Close order
+						$order->setData('state', 'closed');
+						$order->setStatus('closed');
+						$order->save();
+
+						// Return
+						$ok++;
+					}
+
+					// Credit Memo
+					if (!empty($canceledInvoices)) {
+						$service = Mage::getModel('sales/service_order', $order);
+
+						foreach ($invoices as $invoice) {
+							$creditmemo = $service->prepareInvoiceCreditmemo($invoice);
+							$creditmemo->setOfflineRequested(true);
+							$creditmemo->register()->save();
+						}
+
+						// Close order
+						$order->setData('state', Mage_Sales_Model_Order::STATE_CLOSED);
+						$order->setStatus(Mage_Sales_Model_Order::STATE_CLOSED);
+						$order->save();
+
+						// Return
+						$ok++;
 					}
 
 					if (empty($invoices) && empty($canceledInvoices)) {
@@ -1574,10 +1603,10 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 						$helperLog->info("{$returnMessageLabel} | Order canceled.");
 
 						// Return
-						$success = true;
+						$ok++;
 					}
 
-					if ($success) {
+					if ($ok > 0) {
 						$returnMessage = "{$returnMessageLabel} | Order status '{$status}' processed.";
 						$helperLog->info($returnMessage);
 
@@ -2334,48 +2363,5 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 		return $data;
 	}
-        
-        /**
-         * @param object $order
-         * @return boolean
-         */
-        private function closeOrder($order){
-            $order->setData('state', Mage_Sales_Model_Order::STATE_CLOSED);
-            $order->setStatus(Mage_Sales_Model_Order::STATE_CLOSED);
-            $order->addStatusToHistory(Mage_Sales_Model_Order::STATE_CLOSED, "Transaction update received: " . Mage_Sales_Model_Order::STATE_CLOSED, true);
-            $order->sendOrderUpdateEmail();
-            if($order->save()){
-                return true;
-            }else{
-                return false;
-            }
-        }
-
-        /**
-         * @param object $invoice
-         * @return boolean
-         */
-        private function closeInvoice($invoice){
-            $invoice->setState(Mage_Sales_Model_Order_Invoice::STATE_CANCELED);
-            if($invoice->save()){
-                return true;
-            }else{
-                return false;
-            }
-        }
-        
-        /**
-         * @param object $invoice
-         * @return boolean
-         */
-        private function createCreditMemo($invoice, $service){
-            $creditmemo = $service->prepareInvoiceCreditmemo($invoice);
-            $creditmemo->setOfflineRequested(true);
-            if($creditmemo->register()->save()){
-                return true;
-            }else{
-                return false;
-            }
-        }
 
 }
