@@ -10,6 +10,28 @@ class Uecommerce_Mundipagg_TesteController extends Uecommerce_Mundipagg_Controll
 		var_dump($payment->getAdditionalInformation());
 	}
 
+	public function processOrderAction() {
+		$api = new Uecommerce_Mundipagg_Model_Api();
+		$xml = file_get_contents('/var/www/magento19/teste.xml');
+		$postData = array(
+			'xmlStatusNotification' => $xml
+		);
+
+		$response = $api->processOrder($postData);
+
+		echo $response;
+	}
+
+	public function transactionsAction() {
+		$transactions = Mage::getModel('sales/order_payment_transaction')
+			->getCollection()
+			->addAttributeToFilter('order_id', '1');
+
+		foreach ($transactions as $transaction) {
+			var_dump($transaction->getData());
+		}
+	}
+
 	public function customerAction() {
 		$customerSesion = Mage::getSingleton('customer/session');
 		$customer = Mage::getModel('customer/customer')->load($customerSesion->getId());
@@ -27,7 +49,7 @@ class Uecommerce_Mundipagg_TesteController extends Uecommerce_Mundipagg_Controll
 //		}
 	}
 
-	public function checkoutAction(){
+	public function checkoutAction() {
 
 	}
 
