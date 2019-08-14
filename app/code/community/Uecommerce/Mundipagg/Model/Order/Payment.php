@@ -17,11 +17,6 @@ class Uecommerce_Mundipagg_Model_Order_Payment {
 			Mage::throwException(self::ERR_CANNOT_CREATE_INVOICE);
 		}
 
-		// reset total paid because invoice generation set order total_paid also
-		$order->setBaseTotalPaid(null)
-			->setTotalPaid(null)
-			->save();
-
 		$invoice = Mage::getModel('sales/service_order', $order)->prepareInvoice();
 
 		if (!$invoice->getTotalQty()) {
@@ -52,28 +47,6 @@ class Uecommerce_Mundipagg_Model_Order_Payment {
 		return $invoice;
 	}
 
-	/**
-	 * @param Mage_Sales_Model_Order              $order
-	 * @param Uecommerce_Mundipagg_Model_Standard $standard
-	 * @return Mage_Sales_Model_Order_Invoice
-	 */
-	public function orderPaid(Mage_Sales_Model_Order $order, Uecommerce_Mundipagg_Model_Standard $standard) {
-		try {
-			$invoice = $this->createInvoice($order, $standard);
-
-			$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-			$log->setLogLabel("#{$order->getIncrementId()}");
-
-			$standard->closeAuthorizationTxns($order);
-			$log->info("Authorization transactions closed");
-
-			return $invoice;
-
-		} catch (Exception $e) {
-			Mage::throwException($e);
-		}
-	}
-
 	public function orderOverpaid(Mage_Sales_Model_Order $order) {
 		try {
 			$order->setStatus('overpaid')
@@ -83,17 +56,10 @@ class Uecommerce_Mundipagg_Model_Order_Payment {
 		}
 	}
 
-	public function orderUnderPaid(Mage_Sales_Model_Order $order, $amountToPaid = null) {
+	public function orderUnderPaid(Mage_Sales_Model_Order $order) {
 		try {
-			$order->setStatus('underpaid');
-
-			if (is_null($amountToPaid) === false) {
-				$order->setBaseTotalPaid($amountToPaid)
-					->setTotalPaid($amountToPaid);
-			}
-
-			$order->save();
-
+			$order->setStatus('underpaid')
+				->save();
 		} catch (Exception $e) {
 			Mage::throwException($e);
 		}

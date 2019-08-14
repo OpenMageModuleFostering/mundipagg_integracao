@@ -57,20 +57,33 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 		$state = $order->getState();
 
 		if ($state == Mage_Sales_Model_Order::STATE_CANCELED) {
+
+			// if a order is canceled successfuly, offline retry data must be deleted if exists
+			if (Uecommerce_Mundipagg_Model_Offlineretry::offlineRetryIsEnabled()) {
+				$model = Mage::getModel('mundipagg/offlineretry');
+				$incrementId = $order->getIncrementId();
+				$offlineRetry = $model->loadByIncrementId($incrementId);
+
+				if (is_null($offlineRetry->getId()) === false) {
+					$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
+					$helperLog->setLogLabel("Order #{$incrementId} canceled");
+
+					try {
+						$offlineRetry->delete();
+						$helperLog->info("Offline retry data deleted successfully.");
+
+					} catch (Exception $e) {
+						$helperLog->info("Offline retry data cannot be deleted: {$e}");
+					}
+				}
+			}
+
 			//cancel Mundi transactions via API
 			$this->cancelOrderViaApi($order);
 		}
 	}
 
 	private function cancelOrderViaApi(Mage_Sales_Model_Order $order) {
-		$standard = new Uecommerce_Mundipagg_Model_Standard();
-
-		if($standard->getCanceledByNotificationFlag($order)){
-			return;
-		} else {
-			unset($standard);
-		}
-
 		$payment = $order->getPayment();
 		$paymentMethod = $payment->getAdditionalInformation('PaymentMethod');
 		$allowedPaymentMethods = array(
@@ -144,14 +157,14 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 		$result = $event->getResult();
 		$isPartial = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
-		if ($isPartial === 'partial') {
+		if ($isPartial == 'partial') {
 			switch ($method->getCode()) {
 				case 'mundipagg_creditcardoneinstallment':
 				case 'mundipagg_creditcard':
-//				case 'mundipagg_twocreditcards':
-//				case 'mundipagg_threecreditcards':
-//				case 'mundipagg_fourcreditcards':
-//				case 'mundipagg_fivecreditcards':
+				case 'mundipagg_twocreditcards':
+				case 'mundipagg_threecreditcards':
+				case 'mundipagg_fourcreditcards':
+				case 'mundipagg_fivecreditcards':
 					$active = Mage::getStoreConfig('payment/' . $method->getCode() . '/active');
 
 					if ($active == '1') {
@@ -189,10 +202,29 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	 * Check if recurrency product is in cart in order to show only Mundipagg Credit Card payment
 	 */
 	public function checkForRecurrency($observer) {
-		$session = Mage::getSingleton('checkout/session');
-		$recurrent = $session->getMundipaggRecurrency();
+		$recurrent = 0;
 
-		if ($recurrent) {
+		$session = Mage::getSingleton('admin/session');
+
+		if ($session->isLoggedIn()) {
+			$quote = Mage::getSingleton('adminhtml/session_quote')->getQuote();
+		} else {
+			$quote = Mage::getSingleton('checkout/session')->getQuote();
+		}
+
+		$cartItems = $quote->getAllVisibleItems();
+
+		foreach ($cartItems as $item) {
+			$productId = $item->getProductId();
+
+			$product = Mage::getModel('catalog/product')->load($productId);
+
+			if ($product->getMundipaggRecurrent()) {
+				$recurrent++;
+			}
+		}
+
+		if ($recurrent > 0) {
 			$instance = $observer->getMethodInstance();
 			$result = $observer->getResult();
 
@@ -371,48 +403,6 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 
 			Mage::throwException($errMsg);
 		}
-	}
-
-	/**
-	 * @param Varien_Event $event
-	 */
-	public function cartCheckRecurrency($event) {
-		/* @var Mage_Checkout_Model_Cart $cart */
-		$cart = $event->getCart();
-
-		/* @var Mage_Sales_Model_Quote $quote */
-		$quote = $cart->getQuote();
-
-		/* @var Mage_Sales_Model_Resource_Quote_Item_Collection $items */
-		$items = $quote->getAllItems();
-
-		/* @var Mage_Sales_Model_Quote_Item $item */
-		foreach ($items as $item) {
-
-			/* @var Mage_Sales_Model_Quote_Item_Option $option */
-			foreach ($item->getOptions() as $option) {
-				/* @var Mage_Catalog_Model_Product $product */
-				$product = $option->getProduct();
-				$product->load($product->getId());
-
-				if ($product->getMundipaggRecurrent()) {
-					$this->setQuoteRecurrencyFlag(true);
-
-					return;
-				}
-			}
-		}
-
-		$this->setQuoteRecurrencyFlag(false);
-	}
-
-	/**
-	 * @param boolean $option
-	 *
-	 */
-	private function setQuoteRecurrencyFlag($option) {
-		$session = Mage::getSingleton('checkout/session');
-		$session->setMundipaggRecurrency($option);
 	}
 
 }

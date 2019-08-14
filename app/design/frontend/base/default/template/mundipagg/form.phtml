@@ -47,10 +47,9 @@ $orderGrandTotal = $standard->getQuote()->getBaseGrandTotal();
 // Partial payment?
 $isPartial = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
-if($isPartial == 'partial'):
-	$order = $this->loadOrder();
-	$authorizedAmount = $order->getPaymentAuthorizationAmount();
-	$orderGrandTotal = $order->getBaseGrandTotal();
+if($isPartial == 'partial'): 
+	$authorizedAmount = Mage::getSingleton('checkout/session')->getAuthorizedAmount();
+
 	$baseGrandTotal = $orderGrandTotal - $authorizedAmount;
 else :
 	$baseGrandTotal = $orderGrandTotal;
