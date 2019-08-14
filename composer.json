@@ -1,7 +1,7 @@
 {
     "name": "OpenMageModuleFostering/Mundipagg_Integracao",
     "type": "magento-module",
-    "license": "MITL",
+    "license": "MIT",
     "homepage": "",
     "description": "MundiPagg payment gateway integration extension / Integração com o gateway de pagamentos MundiPagg.",
     "authors": [
