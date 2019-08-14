@@ -1,8 +1,38 @@
 <?xml version="1.0"?>
+<!-- 
+/**
+ * Uecommerce
+ *
+ * NOTICE OF LICENSE
+ *
+ * This source file is subject to the Uecommerce EULA.
+ * It is also available through the world-wide-web at this URL:
+ * http://www.uecommerce.com.br/
+ *
+ * DISCLAIMER
+ *
+ * Do not edit or add to this file if you wish to upgrade the extension
+ * to newer versions in the future. If you wish to customize the extension
+ * for your needs please refer to http://www.uecommerce.com.br/ for more information
+ *
+ * @category   Uecommerce
+ * @package    Uecommerce_Mundipagg
+ * @copyright  Copyright (c) 2012 Uecommerce (http://www.uecommerce.com.br/)
+ * @license    http://www.uecommerce.com.br/
+ */
+
+/**
+ * Mundipagg Payment module
+ *
+ * @category   Uecommerce
+ * @package    Uecommerce_Mundipagg
+ * @author     Uecommerce Dev Team
+ */
+-->
 <config>
     <modules>
         <Uecommerce_Mundipagg>
-            <version>2.12.06</version>
+            <version>2.6.1</version>
         </Uecommerce_Mundipagg>
     </modules>
 
@@ -26,32 +56,9 @@
                     </mundipagg_offline_retry>
                 </entities>
             </mundipagg_resource>
-            <sales>
-                <rewrite>
-                    <order_payment>Uecommerce_Mundipagg_Model_Payment</order_payment>
-                </rewrite>
-            </sales>
         </models>
 
         <events>
-            <catalog_product_save_before>
-                <observers>
-                    <checkRecurrencyFrequency>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>checkRecurrencyFrequency</method>
-                    </checkRecurrencyFrequency>
-                </observers>
-            </catalog_product_save_before>
-
-            <payment_method_is_active>
-                <observers>
-                    <checkRecurrencyFrequency>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>changeRecurrenceValues</method>
-                    </checkRecurrencyFrequency>
-                </observers>
-            </payment_method_is_active>
-
             <controller_action_predispatch>
                 <observers>
                     <sessionUpdate>
@@ -92,22 +99,6 @@
                     </checkForRecurrency>
                 </observers>
             </payment_method_is_active>
-            <controller_action_predispatch_checkout>
-                <observers>
-                    <recurrenceMixConflict>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>recurrenceMixConflict</method>
-                    </recurrenceMixConflict>
-                </observers>
-            </controller_action_predispatch_checkout>
-            <checkout_cart_update_items_after>
-                <observers>
-                    <recurrenceMixConflict>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>recurrenceMixConflict</method>
-                    </recurrenceMixConflict>
-                </observers>
-            </checkout_cart_update_items_after>
             <sales_quote_collect_totals_after>
                 <observers>
                     <mundipagg_discount_partial>
@@ -126,35 +117,7 @@
                     </delete_offline_retry_data_from_canceled_order>
                 </observers>
             </order_cancel_after>
-            <checkout_cart_save_after>
-                <observers>
-                    <mundipagg_cart_check_recurrency>
-                        <type>singleton</type>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>cartCheckRecurrency</method>
-                    </mundipagg_cart_check_recurrency>
-                </observers>
-            </checkout_cart_save_after>
-            <checkout_cart_product_add_after>
-                <observers>
-                    <mundipagg_cart_check_recurrency>
-                        <type>singleton</type>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>cartCheckRecurrencyConflicts</method>
-                    </mundipagg_cart_check_recurrency>
-                </observers>
-            </checkout_cart_product_add_after>
-            <checkout_cart_update_items_after>
-                <observers>
-                    <mundipagg_cart_check_recurrency>
-                        <type>singleton</type>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>cartCheckRecurrencyConflicts</method>
-                    </mundipagg_cart_check_recurrency>
-                </observers>
-            </checkout_cart_update_items_after>
         </events>
-        
 
         <resources>
             <mundipagg_setup>
@@ -197,17 +160,17 @@
                     <order_creditmemo_totals>Uecommerce_Mundipagg_Block_Sales_Order_Creditmemo_Totals</order_creditmemo_totals>
                 </rewrite>
             </sales>
+            <checkout>
+                <rewrite>
+                    <onepage_payment_methods>Uecommerce_Mundipagg_Block_Checkout_Onepage_Payment_Methods</onepage_payment_methods>
+                </rewrite>
+            </checkout>
         </blocks>
-
+        
         <helpers>
             <mundipagg>
                 <class>Uecommerce_Mundipagg_Helper</class>
             </mundipagg>
-            <core>
-                <rewrite>
-                    <unserializeArray>Uecommerce_Mundipagg_Helper_UnserializeArray</unserializeArray>
-                </rewrite>
-            </core>
         </helpers>
 
         <sales>
@@ -309,17 +272,6 @@
                 </mundipagg>
             </updates>
         </layout>
-        <events>
-            <admin_session_user_login_success>
-                <observers>
-                    <unique_name>
-                        <type>singleton</type>
-                        <class>Uecommerce_Mundipagg_Model_Observer</class>
-                        <method>checkModuleVersion</method>
-                    </unique_name>
-                </observers>
-            </admin_session_user_login_success>
-        </events>
     </adminhtml>
     <admin>
         <routers>
@@ -332,7 +284,7 @@
             </adminhtml>
         </routers>
     </admin>
-
+      
     <default>
         <payment>
             <mundipagg_standard>
@@ -346,12 +298,14 @@
                 <delivery_deadline>5</delivery_deadline>
                 <shipping_company>Correios</shipping_company>
                 <environment_fcontrol>1</environment_fcontrol>
-                <antifraud_minimum_clearsale>0.00</antifraud_minimum_clearsale>
-                <antifraud_minimum_fcontrol>0.00</antifraud_minimum_fcontrol>
-                <antifraud_minimum_stone>0.00</antifraud_minimum_stone>
-                <integration_timeout_limit>30</integration_timeout_limit>
-                <overwrite_magento_flags>1</overwrite_magento_flags>
             </mundipagg_standard>
+            <mundipagg_creditcardoneinstallment>
+                <model>mundipagg/creditcardoneinstallment</model>
+                <active>0</active>
+                <title><![CDATA[Cartão de Crédito à vista]]></title>
+                <allowspecific>0</allowspecific>
+                <payment_action>authorize</payment_action>
+            </mundipagg_creditcardoneinstallment>
             <mundipagg_creditcard>
                 <model>mundipagg/creditcard</model>
                 <active>0</active>
@@ -404,13 +358,6 @@
                 <allowspecific>0</allowspecific>
                 <payment_action>authorize</payment_action>
             </mundipagg_debit>
-            <mundipagg_recurrencepayment>
-                <model>mundipagg/recurrencepayment</model>
-                <active>0</active>
-                <title><![CDATA[Recorrência no checkout]]></title>
-                <allowspecific>0</allowspecific>
-                <payment_action>authorize</payment_action>
-            </mundipagg_recurrencepayment>
         </payment>
     </default>
 </config>

@@ -1,4 +1,33 @@
 <?php
+
+/**
+ * Uecommerce
+ *
+ * NOTICE OF LICENSE
+ *
+ * This source file is subject to the Uecommerce EULA.
+ * It is also available through the world-wide-web at this URL:
+ * http://www.uecommerce.com.br/
+ *
+ * DISCLAIMER
+ *
+ * Do not edit or add to this file if you wish to upgrade the extension
+ * to newer versions in the future. If you wish to customize the extension
+ * for your needs please refer to http://www.uecommerce.com.br/ for more information
+ *
+ * @category   Uecommerce
+ * @package    Uecommerce_Mundipagg
+ * @copyright  Copyright (c) 2012 Uecommerce (http://www.uecommerce.com.br/)
+ * @license    http://www.uecommerce.com.br/
+ */
+
+/**
+ * Mundipagg Payment module
+ *
+ * @category   Uecommerce
+ * @package    Uecommerce_Mundipagg
+ * @author     Uecommerce Dev Team
+ */
 class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
 
     /**
@@ -51,7 +80,7 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
         $this->_item = $item;
         
         $this->_product = Mage::getModel('catalog/product')->load($item->getProductId());
-
+        
 
         if ($this->_product->getMundipaggRecurrent() && $this->isRecurrent()) {
             $this->_setRecurrencyByProduct($this->_product);
@@ -143,8 +172,7 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
             'DateToStartBilling' => $this->getFormattedDateToStartBilling($frequency, $interval),
             'Frequency' => $frequency,
             'Interval' => $interval,
-            'OneDollarAuth' => true,
-            'Recurrences' => ($_product->getMundipaggRecurrences())
+            'Recurrences' => ($_product->getMundipaggRecurrences() - 1)
         );
 
         $this->setData('recurrency', $this->_recurrency);
@@ -163,8 +191,27 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
      */
     public function getFormattedDateToStartBilling($frequency, $interval) {
         $date = new Zend_Date(Mage::getModel('core/date')->timestamp(), Zend_Date::TIMESTAMP);
-        $data = $date->toString('yyyy-MM-ddTHH:mm:ss');
-        return $data;
+
+        switch ($frequency) {
+            case 'Daily':
+                $frequency = 'Day';
+                break;
+            case 'Weekly':
+                $frequency = 'Week';
+                break;
+            case 'Monthly':
+                $frequency = 'Month';
+                break;
+            case 'Yearly':
+                $frequency = 'Year';
+                break;
+        }
+
+        $function = 'add' . $frequency;
+
+        $date->{$function}($interval);
+
+        return $date->toString('yyyy-MM-ddTHH:mm:ss');
     }
 
     /**
@@ -200,9 +247,7 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
      * Add current recorrency in array data.
      */
     protected function addRecurrencyData() {
-    	$recurrencyRef = $this->_recurrency;
-
-        if (!empty($recurrencyRef)) {
+        if (!empty($this->_recurrency)) {
             $recurrency = new Varien_Object();
             $recurrency->setData('product', $this->getProduct());
             $recurrency->setData('recurrency', $this->getRecurrency());
@@ -252,11 +297,20 @@ class Uecommerce_Mundipagg_Model_Recurrency extends Varien_Object {
         foreach ($this->getRecurrencesData() as $recurrency) {
             $newCreditCardTransactionCollection = $_request['CreditCardTransactionCollection'][0];
 
+            if ($recurrency->hasItem()) {
+                $amountItem = $recurrency->getItem()->getItemFinalPrice();
+
+                $amount = str_replace('.', '', number_format($amountItem, 2, '.', ''));
+            } else {
+                $amount = str_replace('.', '', number_format($recurrency->getProduct()->getFinalPrice(), 2, '.', ''));
+            }
+
             $itemRecurrency = $recurrency->getRecurrency();
+            $newCreditCardTransactionCollection['AmountInCents'] = $amount;
             $newCreditCardTransactionCollection['InstallmentCount'] = $installmentCount;
             $newCreditCardTransactionCollection['Recurrency'] = $itemRecurrency;
             $newCreditCardTransactionCollection['CreditCardOperation'] = 'AuthOnly';
-            $_request['CreditCardTransactionCollection'][0] = $newCreditCardTransactionCollection;
+            $_request['CreditCardTransactionCollection'][] = $newCreditCardTransactionCollection;
         }
         
         return $_request;

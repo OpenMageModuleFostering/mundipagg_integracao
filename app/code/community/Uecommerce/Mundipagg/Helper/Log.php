@@ -14,16 +14,10 @@ class Uecommerce_Mundipagg_Helper_Log extends Mage_Core_Helper_Abstract {
 
 	public function setMethod($method) {
 		$this->method = $method;
-		return $this;
 	}
 
 	public function setLogLabel($logLabel) {
 		$this->logLabel = $logLabel;
-		return $this;
-	}
-
-	public function getLogLabel() {
-		return $this->logLabel;
 	}
 
 	public function info($msg) {
@@ -52,30 +46,18 @@ class Uecommerce_Mundipagg_Helper_Log extends Mage_Core_Helper_Abstract {
 	}
 
 	private function write($msg) {
-		$debugIsEnabled = intval(Mage::getStoreConfig('payment/mundipagg_standard/debug'));
-
-		if ($debugIsEnabled === false)
-			return;
-
-		$version = Mage::helper('mundipagg')->getExtensionVersion();
 		$file = "Mundipagg_Integracao_" . date('Y-m-d') . ".log";
-		$method = $this->method;
-		$newMsg = "v{$version} ";
 
-		if (!empty($method)) {
-			$logLabel = $this->logLabel;
-
-			if (!empty($logLabel)) {
-				$newMsg .= "[{$this->method}] {$this->logLabel} | {$msg}";
+		if (!empty($this->method)) {
+			if (!empty($this->logLabel)) {
+				$msg = "[{$this->method}] {$this->logLabel} | {$msg}";
 
 			} else {
-				$newMsg .= "[{$this->method}] {$msg}";
+				$msg = "[{$this->method}] {$msg}";
 			}
-		} else {
-			$newMsg .= $msg;
 		}
 
-		Mage::log($newMsg, $this->level, $file);
+		Mage::log($msg, $this->level, $file);
 	}
 
 } 
