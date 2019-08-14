@@ -1,32 +1,5 @@
 <?php
-/**
- * Uecommerce
- *
- * NOTICE OF LICENSE
- *
- * This source file is subject to the Uecommerce EULA.
- * It is also available through the world-wide-web at this URL:
- * http://www.uecommerce.com.br/
- *
- * DISCLAIMER
- *
- * Do not edit or add to this file if you wish to upgrade the extension
- * to newer versions in the future. If you wish to customize the extension
- * for your needs please refer to http://www.uecommerce.com.br/ for more information
- *
- * @category   Uecommerce
- * @package    Uecommerce_Mundipagg
- * @copyright  Copyright (c) 2012 Uecommerce (http://www.uecommerce.com.br/)
- * @license    http://www.uecommerce.com.br/
- */
 
-/**
- * Mundipagg Payment module
- *
- * @category   Uecommerce
- * @package    Uecommerce_Mundipagg
- * @author     Uecommerce Dev Team
- */
 class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard {
 
 	const TRANSACTION_NOT_FOUND        = "Transaction not found";
@@ -121,9 +94,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					$creditcardTransactionData->CreditCard->SecurityCode = $paymentData['SecurityCode']; // Código de segurança
 					$creditcardTransactionData->CreditCard->ExpMonth = $paymentData['ExpMonth']; // Mês Exp
 					$creditcardTransactionData->CreditCard->ExpYear = $paymentData['ExpYear']; // Ano Exp 
-					$creditcardTransactionData->CreditCard->CreditCardBrand = $paymentData['CreditCardBrandEnum']; // Bandeira do cartão : Visa ,MasterCard ,Hipercard ,Amex */
+					$creditcardTransactionData->CreditCard->CreditCardBrand = $paymentData['CreditCardBrandEnum']; // Bandeira do cartão : Visa ,MasterCard ,Hipercard ,Amex
 					$creditcardTransactionData->CreditCardOperation = $creditCardOperationEnum;
-					/** Tipo de operação: AuthOnly | AuthAndCapture | AuthAndCaptureWithDelay  */
+					/** Tipo de operação: AuthOnly | AuthAndCapture | AuthAndCaptureWithDelay  **/
 					$creditcardTransactionData->AmountInCents = intval(strval(($paymentData['AmountInCents']))); // Valor da transação
 					$creditcardTransactionData->InstallmentCount = $paymentData['InstallmentCount']; // Nº de parcelas
 					$creditcardTransactionData->Options->CurrencyIso = "BRL"; //Moeda do pedido
@@ -161,7 +134,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 			$_request["CreditCardTransactionCollection"] = $this->ConvertCreditcardTransactionCollectionFromRequest($creditcardTransactionCollection, $standard);
 
-			$_request = $recurrencyModel->generateRecurrences($_request, $installmentCount);
+                        if($data['payment_method'] === 'mundipagg_recurrencepayment') {
+                            $_request = $recurrencyModel->generateRecurrences($_request, $installmentCount);
+                        }
 
 			// Buyer data
 			$_request["Buyer"] = array();
@@ -1294,12 +1269,29 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 				//if Magento order is not processing and MundiPagg order status is canceled, cancel the order on Magento
 				if ($order->getState() != Mage_Sales_Model_Order::STATE_PROCESSING && $orderStatus == Uecommerce_Mundipagg_Model_Enum_OrderStatusEnum::CANCELED) {
 
-					if ($order->getState() == Mage_Sales_Model_Order::STATE_CANCELED) {
-						$returnMessage = "OK | {$returnMessageLabel} | Order already canceled.";
+					switch ($order->getState()) {
+						case Mage_Sales_Model_Order::STATE_CANCELED:
+							$returnMessage = 'OK | ' . $returnMessageLabel . ' | Order already canceled.';
+							$helperLog->info($returnMessage);
+							return $returnMessage;
+						case Mage_Sales_Model_Order::STATE_COMPLETE:
+							foreach ($order->getInvoiceCollection() as $invoice) {
+								if ($invoice->canRefund()) {
+									$invoices[] = $invoice;
+								}
+							}
 
-						$helperLog->info($returnMessage);
-
-						return $returnMessage;
+							if (!empty($invoices)) {
+								$service = Mage::getModel('sales/service_order', $order);
+								foreach ($invoices as $invoice) {
+									$this->closeInvoice($invoice);
+									$this->createCreditMemo($invoice, $service);
+								}
+							}
+							$this->closeOrder($order);
+							$returnMessage = 'OK | ' . $returnMessageLabel . ' | Order closed.';
+							$helperLog->info($returnMessage);
+							return $returnMessage;
 					}
 
 					try {
@@ -1789,6 +1781,10 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 	/**
 	 * Create invoice
 	 * @todo must be deprecated use Uecommerce_Mundipagg_Model_Order_Payment createInvoice
+	 * @param Mage_Sales_Model_Order $order
+	 * @param array $data
+	 * @param float $totalPaid
+	 * @param string $status
 	 * @return string OK|KO
 	 */
 	private function createInvoice($order, $data, $totalPaid, $status) {
@@ -1864,8 +1860,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$newStatus = 'overpaid';
 			$order->setState(Mage_Sales_Model_Order::STATE_PROCESSING, 'overpaid');
 		} else {
-			$order->setState(Mage_Sales_Model_Order::STATE_PROCESSING, true);
-                        $order->addStatusToHistory(Mage_Sales_Model_Order::STATE_PROCESSING, $comment = 'Boleto pago', true);
+			$order->setState(Mage_Sales_Model_Order::STATE_PROCESSING, true, 'Boleto pago', true);
 		}
 
 		$order->save();
