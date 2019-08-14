@@ -362,16 +362,6 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 					}
 
 					$epsilon = 0.00001;
-
-//					$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-//					$helperLog->info("totalInstallments: {$totalInstallments}");
-//					$helperLog->info("grandTotal: {$grandTotal}");
-//					$helperLog->info("getPaymentInterest: {$info->getPaymentInterest()}");
-//					$helperLog->info("epsilon: {$epsilon}");
-
-//					if ($totalInstallments > 0 && ($grandTotal - $totalInstallments - $info->getPaymentInterest())) {
-//						Mage::throwException(Mage::helper('payment')->__('Installments does not match with quote.'));
-//					}
 				}
 			} else {
 				if (isset($mundipagg['method'])) {
@@ -522,14 +512,7 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				break;
 		}
 
-		$mageVersion = Mage::helper('mundipagg/version')->convertVersionToCommunityVersion(Mage::getVersion());
-
-		if (version_compare($mageVersion, '1.5.0', '<')) {
-			$orderAction = 'order';
-		} else {
-			$orderAction = Mage_Payment_Model_Method_Abstract::ACTION_ORDER;
-		}
-
+		$orderAction = Mage_Payment_Model_Method_Abstract::ACTION_ORDER;
 		$payment = $this->getInfoInstance();
 		$order = $payment->getOrder();
 
@@ -585,24 +568,28 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 			// Proceed to authorization on Gateway
 			$resultPayment = $this->doPayment($payment, $order);
+			$helper = Mage::helper('mundipagg');
+			$result = $helper->issetOr($resultPayment['result'], false);
+			$ccResultCollection = $helper->issetOr($result['CreditCardTransactionResultCollection']);
 
-			// We record transaction(s)
-			if (isset($resultPayment['result'])) {
-				$xml = $resultPayment['result'];
-				$json = json_encode($xml);
+			if ($result === false) {
+				return $this->integrationTimeOut($order, $payment);
+			}
 
-				$resultPayment['result'] = array();
-				$resultPayment['result'] = json_decode($json, true);
+			// Return error
+			if (isset($resultPayment['error'])) {
+				return $this->paymentError($payment, $resultPayment);
+			}
 
-				if (isset($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult)) {
-					if (count($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult) == 1) {
-						$trans = $resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'];
+			if (is_null($ccResultCollection) === false) {
+				// We record transaction(s)
+				if (count($ccResultCollection) == 1) {
+					$trans = $ccResultCollection[0];
+					$this->_addTransaction($payment, $trans['TransactionKey'], Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH, $trans);
 
-						$transaction = $this->_addTransaction($payment, $trans['TransactionKey'], Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH, $trans);
-					} else {
-						foreach ($resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'] as $key => $trans) {
-							$transaction = $this->_addTransaction($payment, $trans['TransactionKey'], Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH, $trans, $key);
-						}
+				} else {
+					foreach ($ccResultCollection as $key => $trans) {
+						$this->_addTransaction($payment, $trans['TransactionKey'], Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH, $trans, $key);
 					}
 				}
 			}
@@ -612,7 +599,10 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				try {
 					$payment->setSkipOrderProcessing(true)->save();
 
-					Mage::throwException(Mage::helper('mundipagg')->__($resultPayment['ErrorDescription']));
+					if (empty($resultPayment['ErrorDescription']) === false) {
+						Mage::throwException(Mage::helper('mundipagg')->__($resultPayment['ErrorDescription']));
+					}
+
 				} catch (Exception $e) {
 					Mage::logException($e);
 
@@ -624,21 +614,20 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 					$order->sendNewOrderEmail();
 				}
 
-				if (isset($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult)) {
-					$creditCardTransactionResultCollection = $xml->CreditCardTransactionResultCollection->CreditCardTransactionResult;
+				$accPaymentAuthorizationAmount = sprintf($order->getPaymentAuthorizationAmount());
+				$accGrandTotal = sprintf($order->getGrandTotal());
 
-					// We can capture only if:
-					// 1. Multiple Credit Cards Payment
-					// 2. Anti fraud is disabled
-					// 3. Payment action is "AuthorizeAndCapture"
-					if (
-						count($creditCardTransactionResultCollection) > 1 &&
-						$this->getAntiFraud() == 0 &&
-						$this->getPaymentAction() == 'order' &&
-						$order->getPaymentAuthorizationAmount() == $order->getGrandTotal()
-					) {
-						$this->captureAndcreateInvoice($payment);
-					}
+				// We can capture only if:
+				// 1. Multiple Credit Cards Payment
+				// 2. Anti fraud is disabled
+				// 3. Payment action is "AuthorizeAndCapture"
+				// 4. Authorization amount is equal to grand_total
+				if (count($ccResultCollection) > 1
+					&& $this->getAntiFraud() == 0
+					&& $this->getPaymentAction() == 'order'
+					&& $accPaymentAuthorizationAmount == $accGrandTotal
+				) {
+					$this->captureAndcreateInvoice($payment);
 				}
 			}
 
@@ -658,7 +647,14 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 	 * @return Mage_Payment_Model_Abstract
 	 */
 	public function capture(Varien_Object $payment, $amount) {
-		$helper = Mage::helper('payment');
+		$helper = Mage::helper('mundipagg');
+		$captureCase = $helper->issetOr($_POST['invoice']['capture_case'], 'offline');
+
+		if ($captureCase === 'online') {
+			$this->captureOnline($payment);
+
+			return $this;
+		}
 
 		if (!$this->canCapture()) {
 			Mage::throwException($helper->__('Capture action is not available.'));
@@ -677,69 +673,145 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 			return $this;
 		}
 
-		// Prepare data in order to capture
-		if ($payment->getAdditionalInformation('OrderKey')) {
-			$transactions = Mage::getModel('sales/order_payment_transaction')
-				->getCollection()
-				->addAttributeToFilter('order_id', array('eq' => $payment->getOrder()->getEntityId()))
-				->addAttributeToFilter('txn_type', array('eq' => 'authorization'));
+		/* @var Mage_Sales_Model_Order_Payment $payment */
+		$orderkeys = (array)$payment->getAdditionalInformation('OrderKey');
 
-			foreach ($transactions as $key => $transaction) {
-				$TransactionKey = $transaction->getAdditionalInformation('TransactionKey');
-				$TransactionReference = $transaction->getAdditionalInformation('TransactionReference');
-			}
-
-//			$data['CreditCardTransactionCollection']['AmountInCents'] = $payment->getOrder()->getBaseGrandTotal() * 100;
-//			$data['CreditCardTransactionCollection']['TransactionKey'] = $TransactionKey;
-//			$data['CreditCardTransactionCollection']['TransactionReference'] = $TransactionReference;
-			$orderkeys = (array)$payment->getAdditionalInformation('OrderKey');
-
-			foreach ($orderkeys as $orderkey) {
-				$data['OrderKey'] = $orderkey;
-				$data['ManageOrderOperationEnum'] = 'Capture';
-
-				//Call Gateway Api
-				$api = Mage::getModel('mundipagg/api');
-
-				$capture = $api->manageOrderRequest($data, $this);
-
-				// Xml
-				$xml = $capture['result'];
-				$json = json_encode($xml);
-
-				$capture['result'] = array();
-				$capture['result'] = json_decode($json, true);
-
-				// Save transactions
-				if (isset($capture['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'])) {
-					if (count($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult) == 1) {
-						$trans = $capture['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'];
-
-						$this->_addTransaction($payment, $trans['TransactionKey'], Mage_Sales_Model_Order_Payment_Transaction::TYPE_CAPTURE, $trans);
-					} else {
-						$CapturedAmountInCents = 0;
-
-						foreach ($capture['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'] as $key => $trans) {
-							$TransactionKey = $trans['TransactionKey'];
-							$CapturedAmountInCents += $trans['CapturedAmountInCents'];
-						}
-
-						$trans = array();
-						$trans['CapturedAmountInCents'] = $CapturedAmountInCents;
-						$trans['Success'] = true;
-
-						$this->_addTransaction($payment, $TransactionKey, Mage_Sales_Model_Order_Payment_Transaction::TYPE_CAPTURE, $trans);
-					}
-				} else {
-					Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
-
-					return false;
-				}
-			}
-		} else {
+		if (empty($orderkeys)) {
 			Mage::throwException(Mage::helper('mundipagg')->__('No OrderKey found.'));
 
 			return false;
+		}
+
+		foreach ($orderkeys as $orderkey) {
+			/* @var Uecommerce_Mundipagg_Model_Api $api */
+			$api = Mage::getModel('mundipagg/api');
+			//Call Gateway Api
+			$capture = $api->saleCapture(['OrderKey' => $orderkey], $payment->getOrder()->getIncrementId());
+			$ccTxnResultCollection = $helper->issetOr($capture['CreditCardTransactionResultCollection']);
+
+			if (!is_array($ccTxnResultCollection)
+				|| is_null($ccTxnResultCollection)
+				|| empty($ccTxnResultCollection)
+			) {
+				Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
+
+				return false;
+			}
+
+			// Save transactions
+			foreach ($ccTxnResultCollection as $txn) {
+				$this->_addTransaction(
+					$payment,
+					$txn['TransactionKey'],
+					Mage_Sales_Model_Order_Payment_Transaction::TYPE_CAPTURE,
+					$txn
+				);
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Online capture payment abstract methodl
+	 *
+	 * @param Varien_Object $payment
+	 * @return $this
+	 */
+	public function captureOnline(Varien_Object $payment) {
+		/* @var Uecommerce_Mundipagg_Helper_Data $helper */
+		$helper = Mage::helper('mundipagg');
+
+		if (!$this->canCapture()) {
+			Mage::throwException($helper->__('Capture action is not available.'));
+		}
+
+		if ($payment->getAdditionalInformation('PaymentMethod') == 'mundipagg_boleto') {
+			Mage::throwException($helper->__('You cannot capture Boleto Bancário.'));
+		}
+
+		if ($this->getAntiFraud() == 1) {
+			Mage::throwException($helper->__('You cannot capture having anti fraud activated.'));
+		}
+
+		// Already captured
+		if ($payment->getAdditionalInformation('CreditCardTransactionStatusEnum') == 'Captured'
+			|| $payment->getAdditionalInformation('CreditCardTransactionStatus') == 'Captured'
+		) {
+			Mage::throwException($helper->__('Transactions already captured'));
+		}
+
+		/* @var Mage_Sales_Model_Order_Payment $payment */
+		$orderkeys = (array)$payment->getAdditionalInformation('OrderKey');
+
+		if (empty($orderkeys)) {
+			Mage::throwException(Mage::helper('mundipagg')->__('No OrderKey found.'));
+		}
+
+		$captureNotAllowedMsg = $helper->__('Capture was not authorized in MundiPagg');
+		$txnsNotAuthorized = 0;
+
+		foreach ($orderkeys as $orderkey) {
+			$data['OrderKey'] = $orderkey;
+
+			//Call Gateway Api
+			/* @var Uecommerce_Mundipagg_Model_Api $api */
+			$api = Mage::getModel('mundipagg/api');
+			$capture = $api->saleCapture($data, $payment->getOrder()->getIncrementId());
+
+			$ccTxnResultCollection = $helper->issetOr($capture['CreditCardTransactionResultCollection']);
+
+			if (!is_array($ccTxnResultCollection) || is_null($ccTxnResultCollection) || empty($ccTxnResultCollection)) {
+				Mage::throwException($captureNotAllowedMsg);
+			}
+
+			$txnsNotAuthorized = 0;
+
+			// Save transactions
+			foreach ($ccTxnResultCollection as $txn) {
+				$this->_addTransaction(
+					$payment,
+					$helper->issetOr($txn['TransactionKey']),
+					Mage_Sales_Model_Order_Payment_Transaction::TYPE_CAPTURE,
+					$txn
+				);
+
+				$success = $helper->issetOr($txn['Success'], false);
+
+				if ($success === false) {
+					$txnsNotAuthorized++;
+				}
+			}
+		}
+
+		if ($txnsNotAuthorized === 1) {
+			Mage::throwException($captureNotAllowedMsg);
+		} elseif ($txnsNotAuthorized > 1) {
+			Mage::throwException($helper->__('Capture partial authorized'));
+		}
+
+		$this->closeAuthorizationTxns($payment->getOrder());
+
+		// if has just 1 invoice, update his grand total, adding the credit cards interests
+		if (count($payment->getOrder()->getInvoiceCollection()) === 1) {
+
+			/* @var Mage_Sales_Model_Order_Invoice $invoice */
+			$invoice = $payment->getOrder()->getInvoiceCollection()->getItems()[0];
+			$this->equalizeInvoiceTotals($invoice);
+		}
+	}
+
+	public function closeAuthorizationTxns(Mage_Sales_Model_Order $order) {
+		$txnsCollection = Mage::getModel('sales/order_payment_transaction')
+			->getCollection()
+			->addAttributeToFilter('order_id', array('eq' => $order->getId()));
+
+		/* @var Mage_Paypal_Model_Payment_Transaction $txn */
+		foreach ($txnsCollection as $txn) {
+			if ($txn->getTxnType() === 'authorization') {
+				$txn->setOrderPaymentObject($order->getPayment());
+				$txn->setIsClosed(true)->save();
+			}
 		}
 	}
 
@@ -759,6 +831,8 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 		// Error
 		if (!$capture) {
+			Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
+
 			return $this;
 		}
 
@@ -782,6 +856,9 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 		$order->addStatusHistoryComment('Captured online amount of R$' . $order->getBaseGrandTotal(), false);
 		$order->save();
 
+		$this->closeAuthorizationTxns($order);
+		$this->equalizeInvoiceTotals($invoice);
+
 		return $this;
 	}
 
@@ -800,188 +877,148 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 		// Load order
 		$order = $payment->getOrder();
-
 		$order = Mage::getModel('sales/order')->loadByIncrementId($order->getRealOrderId());
 
 		// Proceed to payment on Gateway
 		$resultPayment = $this->doPayment($payment, $order);
 
+		$helper = Mage::helper('mundipagg');
+		$result = $helper->issetOr($resultPayment['result'], false);
+
+		if ($result === false) {
+			return $this->integrationTimeOut($order, $payment);
+		}
+
 		// Return error
 		if (isset($resultPayment['error'])) {
-			try {
-				$mageVersion = Mage::helper('mundipagg/version')->convertVersionToCommunityVersion(Mage::getVersion());
+			return $this->paymentError($payment, $resultPayment);
+		}
 
-				if (version_compare($mageVersion, '1.5.0', '<')) {
-					$transactionType = 'payment';
-				} else {
-					$transactionType = Mage_Sales_Model_Order_Payment_Transaction::TYPE_ORDER;
-				}
+		if (isset($resultPayment['message'])) {
 
-				// Xml
-				$xml = $resultPayment['result'];
-				$json = json_encode($xml);
+			$transactionType = Mage_Sales_Model_Order_Payment_Transaction::TYPE_ORDER;
 
-				$resultPayment['result'] = array();
-				$resultPayment['result'] = json_decode($json, true);
+			// Xml
+			$xml = $resultPayment['result'];
+			$json = json_encode($xml);
 
-				// We record transaction(s)
-				if (isset($resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'])) {
-					if (count($resultPayment['result']['CreditCardTransactionResultCollection']) == 1) {
-						$trans = $resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'];
+			$resultPayment['result'] = array();
+			$resultPayment['result'] = json_decode($json, true);
 
+			switch ($resultPayment['message']) {
+				// Boleto
+				case 0:
+					$boletoTransactionCollection = $helper->issetOr(
+						$resultPayment['result']['BoletoTransactionResultCollection'][0]
+					);
+
+					$boletoUrl = $helper->issetOr($boletoTransactionCollection['BoletoUrl']);
+
+					if (is_null($boletoUrl) === false) {
+						$payment->setAdditionalInformation('BoletoUrl', $boletoUrl);
+
+						// In order to show "Print Boleto" link in order email
+						$order->getPayment()->setAdditionalInformation('BoletoUrl', $boletoUrl);
+					}
+
+					$transactionKey = $helper->issetOr($boletoTransactionCollection['TransactionKey']);
+					$this->_addTransaction($payment, $transactionKey, $transactionType, $boletoTransactionCollection);
+
+					// We record transaction(s)
+					if (count($resultPayment['result']['BoletoTransactionResultCollection']) == 1) {
+						$trans = $boletoTransactionCollection;
 						$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
+
 					} else {
-						foreach ($resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'] as $key => $trans) {
+						foreach ($boletoTransactionCollection as $key => $trans) {
 							$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans, $key);
 						}
 					}
-				}
 
-				if (isset($resultPayment['ErrorItemCollection'])) {
-					if (count($resultPayment['ErrorItemCollection']) == 1) {
-						foreach ($resultPayment['ErrorItemCollection']['ErrorItem'] as $key => $value) {
-							$payment->setAdditionalInformation($key, $value)->save();
-						}
-					} else {
-						foreach ($resultPayment['ErrorItemCollection'] as $key1 => $error) {
-							foreach ($error as $key2 => $value) {
-								$payment->setAdditionalInformation($key1 . '_' . $key2, $value)->save();
-							}
-						}
+					$payment->setTransactionId($this->_transactionId);
+					$payment->save();
+
+					// Send new order email when not in admin
+					if (Mage::app()->getStore()->getCode() != 'admin') {
+						$order->sendNewOrderEmail();
 					}
-				}
 
-				$payment->setSkipOrderProcessing(true)->save();
+					break;
 
-				if (isset($resultPayment['ErrorDescription'])) {
-					$order->addStatusHistoryComment(Mage::helper('mundipagg')->__(htmlspecialchars_decode($resultPayment['ErrorDescription'])));
-					$order->save();
+				// Credit Card
+				case 1:
+					$creditCardTransactionResultCollection = $result['CreditCardTransactionResultCollection'];
+					$transactionsQty = count($creditCardTransactionResultCollection);
 
-					Mage::throwException(Mage::helper('mundipagg')->__($resultPayment['ErrorDescription']));
-				} else {
-					Mage::throwException(Mage::helper('mundipagg')->__('Erro'));
-				}
-			} catch (Exception $e) {
-				return $this;
-			}
-		} else {
-			if (isset($resultPayment['message'])) {
-				$mageVersion = Mage::helper('mundipagg/version')->convertVersionToCommunityVersion(Mage::getVersion());
+					// We record transaction(s)
+					if ($transactionsQty == 1) {
+						$transaction = $creditCardTransactionResultCollection[0];
 
-				if (version_compare($mageVersion, '1.5.0', '<')) {
-					$transactionType = 'payment';
-				} else {
-					$transactionType = Mage_Sales_Model_Order_Payment_Transaction::TYPE_ORDER;
-				}
+						if (array_key_exists('TransactionKey', $transaction)) {
+							$this->_addTransaction($payment, $transaction['TransactionKey'], $transactionType, $transaction);
+						}
 
-				// Xml
-				$xml = $resultPayment['result'];
-				$json = json_encode($xml);
-
-				$resultPayment['result'] = array();
-				$resultPayment['result'] = json_decode($json, true);
-
-				switch ($resultPayment['message']) {
-					// Boleto
-					case 0:
-						$payment->setAdditionalInformation('BoletoUrl', $resultPayment['result']['BoletoTransactionResultCollection']['BoletoTransactionResult']['BoletoUrl']);
-
-						// In order to show "Print Boleto" link in order email
-						$order->getPayment()->setAdditionalInformation('BoletoUrl', $resultPayment['result']['BoletoTransactionResultCollection']['BoletoTransactionResult']['BoletoUrl']);
-
-						// We record transaction(s)
-						if (count($resultPayment['result']['BoletoTransactionResultCollection']) == 1) {
-							$trans = $resultPayment['result']['BoletoTransactionResultCollection']['BoletoTransactionResult'];
-
-							$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
-						} else {
-							foreach ($resultPayment['result']['BoletoTransactionResultCollection']['BoletoTransactionResult'] as $key => $trans) {
+					} else {
+						foreach ($creditCardTransactionResultCollection as $key => $trans) {
+							if (array_key_exists('TransactionKey', $trans)) {
 								$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans, $key);
 							}
 						}
+					}
 
-						$payment->setTransactionId($this->_transactionId);
+					// Send new order email when not in admin
+					if (Mage::app()->getStore()->getCode() != 'admin') {
+						$order->sendNewOrderEmail();
+					}
 
-						$payment->save();
+					// Invoice
+					$order = $payment->getOrder();
 
-						// Send new order email when not in admin
-						if (Mage::app()->getStore()->getCode() != 'admin') {
-							$order->sendNewOrderEmail();
-						}
+					if (!$order->canInvoice()) {
+						// Log error
+						Mage::logException(Mage::helper('core')->__('Cannot create an invoice.'));
+						Mage::throwException(Mage::helper('core')->__('Cannot create an invoice.'));
+					}
 
-						break;
+					// Create invoice
+					$invoice = Mage::getModel('sales/service_order', $payment->getOrder())->prepareInvoice(array());
+					$invoice->register();
 
-					// Credit Card
-					case 1:
-						// We record transaction(s)
-						if (count($resultPayment['result']['CreditCardTransactionResultCollection']) == 1) {
-							$trans = $resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'];
-							if (array_key_exists('TransactionKey', $trans)) {
-								$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
-							}
-						} else {
-							foreach ($resultPayment['result']['CreditCardTransactionResultCollection']['CreditCardTransactionResult'] as $key => $trans) {
-								if (array_key_exists('TransactionKey', $trans)) {
-									$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans, $key);
-								}
-							}
-						}
+					// Set capture case to offline and register the invoice.
+					$invoice->setTransactionId($this->_transactionId);
+					$invoice->setCanVoidFlag(true);
+					$invoice->getOrder()->setIsInProcess(true);
+					$invoice->setState(2);
 
-						// Send new order email when not in admin
-						if (Mage::app()->getStore()->getCode() != 'admin') {
-							$order->sendNewOrderEmail();
-						}
+					// Send invoice if enabled
+					if (Mage::helper('sales')->canSendNewInvoiceEmail($order->getStoreId())) {
+						$invoice->setEmailSent(true);
+						$invoice->sendEmail();
+					}
 
-						// Invoice
-						$order = $payment->getOrder();
+					$invoice->save();
 
-						if (!$order->canInvoice()) {
-							// Log error
-							Mage::logException(Mage::helper('core')->__('Cannot create an invoice.'));
+					$order->setBaseTotalPaid($order->getBaseGrandTotal());
+					$order->setTotalPaid($order->getBaseGrandTotal());
+					$order->addStatusHistoryComment('Captured online amount of R$' . $order->getBaseGrandTotal(), false);
+					$order->save();
 
-							Mage::throwException(Mage::helper('core')->__('Cannot create an invoice.'));
-						}
+					$payment->setLastTransId($this->_transactionId);
+					$payment->save();
 
-						// Create invoice
-						$invoice = Mage::getModel('sales/service_order', $payment->getOrder())->prepareInvoice(array());
-						$invoice->register();
+					break;
 
-						// Set capture case to offline and register the invoice.
-						$invoice->setTransactionId($this->_transactionId);
-						$invoice->setCanVoidFlag(true);
-						$invoice->getOrder()->setIsInProcess(true);
-						$invoice->setState(2);
+				// Debit
+				case 4:
+					// We record transaction
+					$trans = $resultPayment['result'];
 
-						// Send invoice if enabled
-						if (Mage::helper('sales')->canSendNewInvoiceEmail($order->getStoreId())) {
-							$invoice->setEmailSent(true);
-							$invoice->sendEmail();
-						}
-
-						$invoice->save();
-
-						$order->setBaseTotalPaid($order->getBaseGrandTotal());
-						$order->setTotalPaid($order->getBaseGrandTotal());
-						$order->addStatusHistoryComment('Captured online amount of R$' . $order->getBaseGrandTotal(), false);
-						$order->save();
-
-						$payment->setLastTransId($this->_transactionId);
-						$payment->save();
-
-						break;
-
-					// Debit
-					case 4:
-						// We record transaction
-						$trans = $resultPayment['result'];
-
-						$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
-						break;
-				}
+					$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
+					break;
 			}
-
-			return $this;
 		}
+
+		return $this;
 	}
 
 	/**
@@ -990,6 +1027,7 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 	 */
 	public function doPayment($payment, $order) {
 		try {
+			$helper = Mage::helper('mundipagg');
 			$session = Mage::getSingleton('checkout/session');
 			$mundipaggData = $session->getMundipaggData();
 
@@ -1022,7 +1060,6 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 			// 1 or more Credit Cards Payment
 			if ($data['payment_method'] != 'mundipagg_boleto' && $data['payment_method'] != 'mundipagg_debit') {
-				$helper = Mage::helper('mundipagg');
 				$num = $helper->getCreditCardsNumber($type);
 				$method = $helper->getPaymentMethod($num);
 
@@ -1162,6 +1199,13 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				case $type:
 					$approvalRequest = $api->creditCardTransaction($order, $data, $this);
 					break;
+
+				default:
+					$approvalRequest = false;
+			}
+
+			if ($approvalRequest === false) {
+				return false;
 			}
 
 			// Set some data from Mundipagg
@@ -1178,10 +1222,10 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				if (isset($approvalRequest['ErrorItemCollection'])) {
 					$errorItemCollection = $approvalRequest['ErrorItemCollection'];
 
-					if (isset($errorItemCollection['ErrorItem']['ErrorCode'])) {
-						$errorCode = $errorItemCollection['ErrorItem']['ErrorCode'];
+					foreach ($errorItemCollection as $i) {
+						$errorCode = $helper->issetOr($i['ErrorCode']);
 
-						if ($errorCode == '504') {
+						if ($errorCode == 504) {
 							$statusWithError = Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum::WITH_ERROR;
 							Mage::getSingleton('checkout/session')->setApprovalRequestSuccess($statusWithError);
 
@@ -1222,7 +1266,11 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 						Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
 					}
 				} else {
-					$this->offlineRetryCancelOrSuccessOrder($order->getIncrementId());
+					$result = $helper->issetOr($approvalRequest['result'], false);
+
+					if ($result !== false) {
+						$this->offlineRetryCancelOrSuccessOrder($order->getIncrementId());
+					}
 				}
 
 				return $approvalRequest;
@@ -1240,22 +1288,24 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				case 3: // AuthAndCaptureWithDelay
 					// We set authorized amount in session
 					$orderGrandTotal = $order->getGrandTotal();
-					$xml = $approvalRequest['result'];
+					$result = $helper->issetOr($approvalRequest['result']);
+					$orderResult = $helper->issetOr($result['OrderResult']);
+					$creditCardTransactionResultCollection = $result['CreditCardTransactionResultCollection'];
+					$transactionsQty = count($creditCardTransactionResultCollection);
 
-					if (isset($xml->OrderResult)) {
-						$orderResult = $xml->OrderResult;
-					}
+					if ($transactionsQty == 1) {
+						$transaction = $creditCardTransactionResultCollection[0];
+						$success = $transaction['Success'];
 
-					if (count($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult) == 1) {
-						$result = $xml->CreditCardTransactionResultCollection->CreditCardTransactionResult;
-
-						if ($result->Success == true) {
-							$authorizedAmount += $result->AuthorizedAmountInCents * 0.01;
+						if ($success === true) {
+							$authorizedAmount += $transaction['AuthorizedAmountInCents'] * 0.01;
 						}
 					} else {
-						foreach ($xml->CreditCardTransactionResultCollection->CreditCardTransactionResult as $key => $result) {
-							if ($result->Success == true) {
-								$authorizedAmount += $result->AuthorizedAmountInCents * 0.01;
+						foreach ($creditCardTransactionResultCollection as $key => $transaction) {
+							$success = $transaction['Success'];
+
+							if ($success === true) {
+								$authorizedAmount += $transaction['AuthorizedAmountInCents'] * 0.01;
 							}
 						}
 					}
@@ -1270,10 +1320,9 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 						if ($orderGrandTotal < $authorizedAmount) {
 							$interestInformation = $payment->getAdditionalInformation('mundipagg_interest_information');
 							$newInterestInformation = array();
+							$newInterest = 0;
 
 							if (count($interestInformation)) {
-								$newInterest = 0;
-
 								foreach ($interestInformation as $key => $ii) {
 									if (strpos($key, 'partial') !== false) {
 										if ($ii->hasValue()) {
@@ -1318,19 +1367,16 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 								}
 							}
 						} else {
-							$this->offlineRetryCancelOrSuccessOrder($order->getIncrementId());
+							$result = $helper->issetOr($approvalRequest['result'], false);
+
+							if ($result !== false) {
+								$this->offlineRetryCancelOrSuccessOrder($order->getIncrementId());
+							}
 						}
 					}
 
-					// Session
-					$xml = simplexml_load_string($approvalRequest['result']);
-					$json = json_encode($xml);
-					$dataR = array();
-					$dataR = json_decode($json, true);
-
-					// Transaction
-					$transactionKey = isset($dataR['CreditCardTransactionResultCollection']['CreditCardTransactionResult']['TransactionKey']) ? $dataR['CreditCardTransactionResultCollection']['CreditCardTransactionResult']['TransactionKey'] : null;
-					$creditCardTransactionStatusEnum = isset($dataR['CreditCardTransactionResultCollection']['CreditCardTransactionResult']['CreditCardTransactionStatus']) ? $dataR['CreditCardTransactionResultCollection']['CreditCardTransactionResult']['CreditCardTransactionStatus'] : null;
+					$transactionKey = $transaction['TransactionKey'];
+					$creditCardTransactionStatusEnum = $transaction['CreditCardTransactionStatus'];
 
 					try {
 						if ($transactionKey != null) {
@@ -1352,13 +1398,15 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 					break;
 			}
 
+			$orderResult = $helper->issetOr($result['OrderResult']);
+
 			if (isset($orderResult)) {
-				$newOrderKey = (string)$orderResult->OrderKey;
+				$newOrderKey = $orderResult['OrderKey'];
 				$orderPayment = $order->getPayment();
 				$orderKeys = (array)$orderPayment->getAdditionalInformation('OrderKey');
 
 				if (is_null($orderKeys) || !is_array($orderKeys)) {
-					$orderKeys = array();
+					$orderKeys = [];
 				}
 
 				if (!in_array($newOrderKey, $orderKeys)) {
@@ -1390,6 +1438,11 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 		}
 	}
 
+	/**
+	 * @param array $approvalRequest
+	 * @param       $payment
+	 * @return mixed
+	 */
 	private function setPaymentAdditionalInformation($approvalRequest, $payment) {
 		if (isset($approvalRequest['ErrorCode'])) {
 			$payment->setAdditionalInformation('ErrorCode', $approvalRequest['ErrorCode']);
@@ -1489,18 +1542,9 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 				$TransactionReference = $transaction->getAdditionalInformation('TransactionReference');
 			}
 
-//			$data['CreditCardTransactionCollection']['AmountInCents'] = $payment->getOrder()->getBaseGrandTotal() * 100;
-//			$data['CreditCardTransactionCollection']['TransactionKey'] = $TransactionKey;
-//			$data['CreditCardTransactionCollection']['TransactionReference'] = $TransactionReference;
-//			$data['OrderKey'] = $payment->getAdditionalInformation('OrderKey');
 			$orderkeys = $payment->getAdditionalInformation('OrderKey');
 
 			if (!is_array($orderkeys)) {
-//				$errMsg = "Impossible to capture: orderkeys must be an array";
-//				$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-//
-//				$helperLog->error($errMsg);
-//				Mage::throwException($errMsg);
 				$orderkeys = array($orderkeys);
 			}
 
@@ -1890,17 +1934,31 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 		$transaction->setTxnId($transactionId . '-' . $transactionType);
 
 		if ($transactionType == 'authorization') {
-			if ($transactionAdditionalInfo['CreditCardTransactionStatus'] == 'AuthorizedPendingCapture') {
-				$transaction->setIsClosed(0);
-			}
+			$ccTransactionStatus = $transactionAdditionalInfo['CreditCardTransactionStatus'];
+			$transactionOpenStatuses = array(
+				'AuthorizedPendingCapture',
+				'Captured',
+				'PartialCapture',
+				'WithError',
+				'PendingAuthorize'
+			);
 
-			if ($transactionAdditionalInfo['CreditCardTransactionStatus'] == 'NotAuthorized') {
+			$order = $payment->getOrder();
+			$orderIncrementId = $order->getIncrementId();
+
+			$api = new Uecommerce_Mundipagg_Model_Api();
+			$orderInOfflineRetry = $api->orderIsInOfflineRetry($orderIncrementId);
+
+			if (in_array($ccTransactionStatus, $transactionOpenStatuses)
+				|| $orderInOfflineRetry
+			) {
+				$transaction->setIsClosed(0);
+			} else {
 				$transaction->setIsClosed(1);
 			}
 		}
 
 		foreach ($transactionAdditionalInfo as $transKey => $value) {
-
 			if (!is_array($value)) {
 				$transaction->setAdditionalInformation($transKey, htmlspecialchars_decode($value));
 				$payment->setAdditionalInformation($num . '_' . $transKey, htmlspecialchars_decode($value));
@@ -1949,11 +2007,7 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 			$helperLog->info($message);
 			Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('success');
-
-		}/* else {
-			$helperLog->info("{$logLabel} | Payment not authorized and order is not on offline retry.");
-			Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
-		}*/
+		}
 	}
 
 	/**
@@ -1980,6 +2034,410 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 
 			throw new Exception($errMsg);
 		}
+	}
+
+	/**
+	 * @param Mage_Sales_Model_Order_Payment $payment
+	 * @param                                $resultPayment
+	 * @return $this
+	 */
+	private function paymentError(Mage_Sales_Model_Order_Payment $payment, $resultPayment) {
+		try {
+			$transactionType = Mage_Sales_Model_Order_Payment_Transaction::TYPE_ORDER;
+			$helper = Mage::helper('mundipagg');
+			$result = $helper->issetOr($resultPayment['result']);
+			$ccTxnCollection = $helper->issetOr($result['CreditCardTransactionResultCollection']);
+
+			// We record transaction(s)
+			if (is_null($ccTxnCollection) === false) {
+				if (count($ccTxnCollection) == 1) {
+					$trans = $ccTxnCollection[0];
+
+					$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans);
+				} else {
+					foreach ($ccTxnCollection as $key => $trans) {
+						$this->_addTransaction($payment, $trans['TransactionKey'], $transactionType, $trans, $key);
+					}
+				}
+			}
+
+			if (isset($resultPayment['ErrorItemCollection'])) {
+				if (count($resultPayment['ErrorItemCollection']) == 1) {
+					foreach ($resultPayment['ErrorItemCollection']['ErrorItem'] as $key => $value) {
+						$payment->setAdditionalInformation($key, $value)->save();
+					}
+				} else {
+					foreach ($resultPayment['ErrorItemCollection'] as $key1 => $error) {
+						foreach ($error as $key2 => $value) {
+							$payment->setAdditionalInformation($key1 . '_' . $key2, $value)->save();
+						}
+					}
+				}
+			}
+
+			$payment->setSkipOrderProcessing(true)->save();
+
+			if (isset($resultPayment['ErrorDescription'])) {
+				Mage::throwException(Mage::helper('mundipagg')->__($resultPayment['ErrorDescription']));
+
+			} else {
+				Mage::throwException(Mage::helper('mundipagg')->__('Error'));
+			}
+
+		} catch (Exception $e) {
+			return $this;
+		}
+	}
+
+	private function integrationTimeOut(Mage_Sales_Model_Order $order, Mage_Sales_Model_Order_Payment &$payment) {
+		$payment->setSkipOrderProcessing(true);
+		$payment->setAdditionalInformation('IntegrationError', Uecommerce_Mundipagg_Model_Api::INTEGRATION_TIMEOUT);
+
+		$comment = Uecommerce_Mundipagg_Model_Api::INTEGRATION_TIMEOUT;
+		$order->addStatusHistoryComment($comment);
+		$order->save();
+
+		$session = Mage::getSingleton('checkout/session');
+		$session->setApprovalRequestSuccess('success');
+
+		return $this;
+	}
+
+	/**
+	 * @param array                          $mundiQueryResult
+	 * @param Mage_Sales_Model_Order_Payment $payment
+	 * @return bool|null
+	 */
+	public function processQueryResults($mundiQueryResult, Mage_Sales_Model_Order_Payment $payment) {
+		$helper = Mage::helper('mundipagg');
+		$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
+
+		$order = $payment->getOrder();
+		$log->setLogLabel("#{$order->getIncrementId()}");
+
+		$saleDataCollection = $helper->issetOr($mundiQueryResult['SaleDataCollection']);
+
+		if (is_null($saleDataCollection)) {
+			$log->info("SaleDataCollection is null. Method execution is over");
+
+			return false;
+		}
+
+		$saleData = null;
+		$dateFormat = 'Y-m-d';
+
+		foreach ($saleDataCollection as $i) {
+			$createDate = $i['OrderData']['CreateDate'];
+			$transactionCreateDate = new DateTime($createDate);
+			$orderCreateDate = new DateTime($order->getCreatedAt());
+
+			$formatTransDate = $transactionCreateDate->format($dateFormat);
+			$formatOrderDate = $orderCreateDate->format($dateFormat);
+
+			if ($formatTransDate == $formatOrderDate) {
+				$saleData = $i;
+				continue;
+			}
+		}
+
+		$creditCardTransactionDataCollection = $helper->issetOr(
+			$saleData['CreditCardTransactionDataCollection']
+		);
+
+		if (is_null($creditCardTransactionDataCollection)) {
+			$log->info("CreditCardTransactionDataCollection is null. Method execution is over");
+
+			return false;
+		}
+
+		$transactionType = Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH;
+
+		foreach ($creditCardTransactionDataCollection as $i) {
+			$transactionId = $i['TransactionKey'];
+			$this->_addTransaction($payment, $transactionId, $transactionType, $i);
+		}
+
+		return true;
+	}
+
+	public function removeIntegrationErrorInfo(Mage_Sales_Model_Order $order) {
+		$errMsg = null;
+		$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
+		$log->setLogLabel("#{$order->getIncrementId()}");
+
+		$info = $order->getPayment()->getAdditionalInformation();
+
+		if (!isset($info['IntegrationError'])) {
+			return;
+		}
+
+		try {
+			$info = $order->getPayment()->getAdditionalInformation();
+
+			unset($info['IntegrationError']);
+
+			$order->getPayment()
+				->setAdditionalInformation($info)
+				->save();
+
+			$log->info("IntegrationError message removed");
+
+		} catch (Exception $e) {
+			$log->error($e, true);
+		}
+	}
+
+	/**
+	 * @param Mage_Sales_Model_Order $order
+	 * @param boolean                $option
+	 */
+	public function setCanceledByNotificationFlag(&$order, $option) {
+		$order->getPayment()->setAdditionalInformation('voided_by_mundi_notification', $option);
+	}
+
+	/**
+	 * @param Mage_Sales_Model_Order $order
+	 */
+	public function getCanceledByNotificationFlag($order) {
+		return $order->getPayment()->getAdditionalInformation('voided_by_mundi_notification');
+	}
+
+	/**
+	 * Equalize invoice base_grand_total and base_total with order totals
+	 * Needed when order has 1 invoice and has credit card interests
+	 *
+	 * @param Mage_Sales_Model_Order_Invoice $invoice
+	 */
+	public function equalizeInvoiceTotals(Mage_Sales_Model_Order_Invoice &$invoice) {
+		$invoice->setBaseGrandTotal($invoice->getOrder()->getBaseGrandTotal())
+			->setGrandTotal($invoice->getOrder()->getGrandTotal())
+			->save();
+	}
+
+	/**
+	 * @param Mage_Checkout_Model_Type_Onepage $onepage
+	 * @param array                            $postData
+	 * @return null|string $redirectRoute
+	 * @throws Exception
+	 */
+	public function retryAuthorization(Mage_Checkout_Model_Type_Onepage &$onepage, $postData) {
+		$redirectRoute = null;
+
+		/* @var Uecommerce_Mundipagg_Helper_CheckoutSession $session */
+		$session = Mage::helper('mundipagg/checkoutSession');
+		$lastQuoteId = $session->getInstance()->getLastSuccessQuoteId();
+		$session->getInstance()->setQuoteId($lastQuoteId);
+
+		/* @var Mage_Sales_Model_Quote $quote */
+		$quote = Mage::getModel('sales/quote')->load($lastQuoteId);
+		$quote->setIsActive(true);
+
+		$onepage->setQuote($quote);
+
+		// Get Reserved Order Id
+		$reservedOrderId = $quote->getReservedOrderId();
+
+		if ($reservedOrderId == false) {
+			return $redirectRoute;
+		}
+
+		$session->setApprovalRequest('partial');
+
+		$order = Mage::getModel('sales/order')->loadByIncrementId($reservedOrderId);
+
+		//
+		$additionalInfo = $order->getPayment()->getAdditionalInformation();
+		$num = 1;
+
+		if ($additionalInfo['2_Success']) {
+			$num++;
+		}
+
+		$idxToken = "mundipagg_twocreditcards_token_2_{$num}";
+
+		switch (true) {
+			case isset($additionalInfo[$idxToken]) :
+				$order->getPayment()->setAdditionalInformation();
+				break;
+		}
+
+		/* @var Uecommerce_Mundipagg_Helper_Data $helper */
+		$helper = Mage::helper('mundipagg');
+
+		if ($order->getStatus() === 'pending' || $order->getStatus() === 'payment_review') {
+			if (empty($postData)) {
+				throw new Exception($helper->__('Invalid data'));
+//				Mage::throwException($helper->__('Invalid data'));
+//				return array('error' => -1, 'message' => Mage::helper('checkout')->__('Invalid data'));
+			}
+
+			$paymentMethod = $helper->issetOr($postData['method']);
+
+			if ($quote->isVirtual()) {
+				$quote->getBillingAddress()->setPaymentMethod($paymentMethod);
+			} else {
+				$quote->getShippingAddress()->setPaymentMethod($paymentMethod);
+			}
+
+			$payment = $quote->getPayment();
+			$payment->importData($postData);
+
+			$quote->save();
+
+			switch ($paymentMethod) {
+				case 'mundipagg_creditcardoneinstallment':
+					$standard = Mage::getModel('mundipagg/creditcardoneinstallment');
+					break;
+				case 'mundipagg_creditcard':
+					$standard = Mage::getModel('mundipagg/creditcard');
+					break;
+
+				case 'mundipagg_twocreditcards':
+					$standard = Mage::getModel('mundipagg/twocreditcards');
+					break;
+
+				case 'mundipagg_threecreditcards':
+					$standard = Mage::getModel('mundipagg/threecreditcards');
+					break;
+
+				case 'mundipagg_fourcreditcards':
+					$standard = Mage::getModel('mundipagg/fourcreditcards');
+					break;
+
+				case 'mundipagg_fivecreditcards':
+					$standard = Mage::getModel('mundipagg/fivecreditcards');
+					break;
+
+				default:
+					return 'mundipagg/standard/partial';
+					break;
+			}
+
+			/* @var Uecommerce_Mundipagg_Model_Standard $standard */
+			$resultPayment = $standard->doPayment($payment, $order);
+			$txns = $helper->issetOr($resultPayment['result']['CreditCardTransactionResultCollection']);
+
+			foreach ($txns as $txn) {
+				$standard->_addTransaction(
+					$order->getPayment(),
+					$helper->issetOr($txn['TransactionKey']),
+					Mage_Sales_Model_Order_Payment_Transaction::TYPE_AUTH,
+					$txn,
+					$num - 1
+				);
+			}
+
+			$teste = $order->getPayment();
+			$order->getPayment()->save();
+
+//			$this->replaceNotAuthorizedCcInfo($txns[0], $order->getPayment());
+
+			$accAuthorizedAmount = sprintf($order->getData('payment_authorization_amount'));
+			$accGrandTotal = sprintf($order->getData('grand_total'));
+
+			if ($standard->getAntiFraud() == 0 &&
+				$standard->getPaymentAction() === 'order' &&
+				$accAuthorizedAmount == $accGrandTotal
+			) {
+				$standard->captureAndcreateInvoice($order->getPayment());
+			}
+
+			switch ($session->getApprovalRequest()) {
+				case 'success':
+					// Send new order email when not in admin and payment is success
+					if (Mage::app()->getStore()->getCode() !== 'admin') {
+						$order->sendNewOrderEmail();
+					}
+					$redirectRoute = 'mundipagg/standard/success';
+					break;
+
+				case 'partial':
+					$redirectRoute = 'mundipagg/standard/partial';
+					break;
+
+				case 'cancel':
+					$redirectRoute = 'mundipagg/standard/cancel';
+					break;
+
+				default:
+					throw new Exception("Unexpected approvalRequestSuccess: {$session->getApprovalRequest()}");
+			}
+		}
+
+		return $redirectRoute;
+	}
+
+	/**
+	 * Replace the not authorized payment additional information
+	 */
+	public function replaceNotAuthorizedCcInfo($mundiResponse, Mage_Sales_Model_Order_Payment &$payment) {
+		$info = $payment->getAdditionalInformation();
+		$ccQty = $info['mundipagg_type'][0];
+		$keys = array_keys($info);
+		$ccsData = [];
+		$otherData = [];
+
+		// separate credit cards payment additional information
+		foreach ($keys as $key) {
+			$idxTwoInitialLetters = $key[0] . $key[1];
+			$value = $info[$key];
+
+			if ($idxTwoInitialLetters === '1_') {
+				$ccsData[1][$key] = $value;
+			} elseif ($idxTwoInitialLetters === '2_') {
+				$ccsData[2][$key] = $value;
+			} else {
+				$otherData[$key] = $value;
+			}
+		}
+
+		$notAuthorizedCc = null;
+
+		// get just the not authorized credit card data
+		for ($i = 1; $i <= $ccQty; $i++) {
+			$idx = "{$i}_Success";
+			$success = $ccsData[$i][$idx];
+
+			if ($success) {
+//				$notAuthorizedCc = $i === 1 ? 1 : 2;
+				if ($i === 1) {
+					$notAuthorizedCc = 1;
+				} else {
+					$notAuthorizedCc = 2;
+				}
+				break;
+			}
+		}
+
+		$responseKeys = $this->extractTxnKeys($mundiResponse);
+		$key = null;
+
+		foreach ($responseKeys as $key => $val) {
+			$idx = "{$notAuthorizedCc}_{$val}";
+			$ccsData[$idx] = isset($ccsData[$idx]) ? $ccsData[$idx] : null;
+		}
+
+		$data = $otherData + $ccsData[1] + $ccsData[2];
+
+		$payment->setAdditionalInformation($data)->save();
+	}
+
+	public function extractTxnKeys($txn) {
+		$keys = [];
+
+		foreach ($txn as $key => $val) {
+			if (is_array($txn[$key]) && !empty($txn[$key])) {
+
+				foreach ($txn[$key] as $subKey => $subVal) {
+					$keys[] = $subKey;
+				}
+
+			} else {
+				$keys[] = $key;
+			}
+		}
+
+		return $keys;
 	}
 
 }

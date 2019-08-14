@@ -487,14 +487,13 @@ class Uecommerce_Mundipagg_Helper_Data extends Mage_Core_Helper_Abstract {
 	}
 
 	public function isAntiFraudEnabled() {
-		$antifraud = Mage::getStoreConfig('payment/mundipagg_standard/antifraud');
-
-		return boolval($antifraud);
+		return Mage::getStoreConfig('payment/mundipagg_standard/antifraud');
 	}
 
 	public function priceFormatter($amountInCents) {
 		$number = round($amountInCents, 2, PHP_ROUND_HALF_DOWN);
 		$number = number_format($number, 2, ',', '');
+
 		return $number;
 	}
 
@@ -522,7 +521,7 @@ class Uecommerce_Mundipagg_Helper_Data extends Mage_Core_Helper_Abstract {
 		$arrVal = explode('.', $value);
 		$cents = $arrVal[1];
 
-		if (strlen($cents) > 2 || !is_numeric($value)){
+		if (strlen($cents) > 2 || !is_numeric($value)) {
 			return false;
 		}
 
@@ -570,6 +569,30 @@ class Uecommerce_Mundipagg_Helper_Data extends Mage_Core_Helper_Abstract {
 		}
 
 		return $antifraudProvider;
+	}
+
+	public function obfuscate($string) {
+		$qty = strlen($string);
+		$newString = str_repeat('*', $qty);
+
+		return $newString;
+	}
+
+	public function jsonEncodePretty($input) {
+		$version = phpversion();
+		$version = explode('.', $version);
+		$version = $version[0] . $version[1];
+		$version = intval($version);
+
+		// JSON Variables available only in PHP 5.4
+		if ($version <= 53) {
+			$result = json_encode($input);
+
+		} else {
+			$result = json_encode($input, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+		}
+
+		return $result;
 	}
 
 }

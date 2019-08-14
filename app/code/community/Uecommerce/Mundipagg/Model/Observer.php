@@ -63,9 +63,8 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 				$model = Mage::getModel('mundipagg/offlineretry');
 				$incrementId = $order->getIncrementId();
 				$offlineRetry = $model->loadByIncrementId($incrementId);
-				$offlineRetryData =$offlineRetry->getData();
 
-				if (!empty($offlineRetryData)) {
+				if (is_null($offlineRetry->getId()) === false) {
 					$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
 					$helperLog->setLogLabel("Order #{$incrementId} canceled");
 
@@ -85,6 +84,14 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	}
 
 	private function cancelOrderViaApi(Mage_Sales_Model_Order $order) {
+		$standard = new Uecommerce_Mundipagg_Model_Standard();
+
+		if($standard->getCanceledByNotificationFlag($order)){
+			return;
+		} else {
+			unset($standard);
+		}
+
 		$payment = $order->getPayment();
 		$paymentMethod = $payment->getAdditionalInformation('PaymentMethod');
 		$allowedPaymentMethods = array(
@@ -120,35 +127,13 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	 * Update status
 	 * */
 	public function updateStatus($event) {
-		$standard = Mage::getModel('mundipagg/standard');
-
-		$paymentAction = $standard->getConfigData('payment_action');
-
 		$method = $event->getOrder()->getPayment()->getAdditionalInformation('PaymentMethod');
-
-		// If it's a multi-payment types we force to ACTION_AUTHORIZE
-		$num = substr($method, 0, 1);
-
-		if ($num > 1) {
-			$paymentAction = Mage_Payment_Model_Method_Abstract::ACTION_AUTHORIZE;
-		}
-
 		$approvalRequestSuccess = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
 		if ($method == 'mundipagg_boleto' && $approvalRequestSuccess != 'cancel') {
 			$comment = Mage::helper('mundipagg')->__('Waiting for Boleto Bancário payment');
 
 			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_HOLDED, true, $comment, false);
-		}
-
-		if ($method != 'mundipagg_boleto' && $paymentAction == 'authorize' && $approvalRequestSuccess == 'partial') {
-			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_NEW, 'pending', '', false);
-		}
-
-		if ($method != 'mundipagg_boleto' && $paymentAction == 'authorize' && $approvalRequestSuccess == 'success') {
-			$comment = Mage::helper('mundipagg')->__('Authorized');
-
-			$this->_updateStatus($event->getOrder(), Mage_Sales_Model_Order::STATE_NEW, 'pending', $comment, false);
 		}
 	}
 
@@ -180,14 +165,14 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 		$result = $event->getResult();
 		$isPartial = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
 
-		if ($isPartial == 'partial') {
+		if ($isPartial === 'partial') {
 			switch ($method->getCode()) {
 				case 'mundipagg_creditcardoneinstallment':
 				case 'mundipagg_creditcard':
-				case 'mundipagg_twocreditcards':
-				case 'mundipagg_threecreditcards':
-				case 'mundipagg_fourcreditcards':
-				case 'mundipagg_fivecreditcards':
+//				case 'mundipagg_twocreditcards':
+//				case 'mundipagg_threecreditcards':
+//				case 'mundipagg_fourcreditcards':
+//				case 'mundipagg_fivecreditcards':
 					$active = Mage::getStoreConfig('payment/' . $method->getCode() . '/active');
 
 					if ($active == '1') {
@@ -225,29 +210,10 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 	 * Check if recurrency product is in cart in order to show only Mundipagg Credit Card payment
 	 */
 	public function checkForRecurrency($observer) {
-		$recurrent = 0;
+		$session = Mage::getSingleton('checkout/session');
+		$recurrent = $session->getMundipaggRecurrency();
 
-		$session = Mage::getSingleton('admin/session');
-
-		if ($session->isLoggedIn()) {
-			$quote = Mage::getSingleton('adminhtml/session_quote')->getQuote();
-		} else {
-			$quote = Mage::getSingleton('checkout/session')->getQuote();
-		}
-
-		$cartItems = $quote->getAllVisibleItems();
-
-		foreach ($cartItems as $item) {
-			$productId = $item->getProductId();
-
-			$product = Mage::getModel('catalog/product')->load($productId);
-
-			if ($product->getMundipaggRecurrent()) {
-				$recurrent++;
-			}
-		}
-
-		if ($recurrent > 0) {
+		if ($recurrent) {
 			$instance = $observer->getMethodInstance();
 			$result = $observer->getResult();
 
@@ -414,5 +380,123 @@ class Uecommerce_Mundipagg_Model_Observer extends Uecommerce_Mundipagg_Model_Sta
 		}
 
 	}
+
+	public function checkRecurrencyFrequency(Varien_Event_Observer $observer) {
+		$product = $observer->getProduct();
+		$recurrent = (boolean)$product->getData('mundipagg_recurrent');
+		$frequency = $product->getData('mundipagg_frequency_enum');
+
+		if ($recurrent === true && $frequency == '0') {
+			$helper = Mage::helper('mundipagg');
+			$errMsg = $helper->__('Recurrency frequency is required');
+
+			Mage::throwException($errMsg);
+		}
+	}
+
+	/**
+	 * @param Varien_Event $event
+	 */
+	public function cartCheckRecurrency($event) {
+		/* @var Mage_Checkout_Model_Cart $cart */
+		$cart = $event->getCart();
+
+		/* @var Mage_Sales_Model_Quote $quote */
+		$quote = $cart->getQuote();
+
+		/* @var Mage_Sales_Model_Resource_Quote_Item_Collection $items */
+		$items = $quote->getAllItems();
+
+		/* @var Mage_Sales_Model_Quote_Item $item */
+		foreach ($items as $item) {
+
+			/* @var Mage_Sales_Model_Quote_Item_Option $option */
+			foreach ($item->getOptions() as $option) {
+				/* @var Mage_Catalog_Model_Product $product */
+				$product = $option->getProduct();
+				$product->load($product->getId());
+
+				if ($product->getMundipaggRecurrent()) {
+					$this->setQuoteRecurrencyFlag(true);
+
+					return;
+				}
+			}
+		}
+
+		$this->setQuoteRecurrencyFlag(false);
+	}
+
+	/**
+	 * @param boolean $option
+	 *
+	 */
+	private function setQuoteRecurrencyFlag($option) {
+		$session = Mage::getSingleton('checkout/session');
+		$session->setMundipaggRecurrency($option);
+	}
+        
+        public function checkModuleVersion()
+        {
+            Mage::log("TESTE 3 ", Zend_Log::ALERT, "test");
+            $localModuleVersion = $this->readModuleVersion();
+            $repoVersion = $this->getRepoVersion();
+            if(version_compare($localModuleVersion, $repoVersion, "<") == 1){
+                $this->insertOldVersionNotification($localModuleVersion, $repoVersion);
+            }
+        }
+        
+        private function insertOldVersionNotification($oldVersion, $newVersion){
+            $notification = mage::getModel("adminnotification/inbox");
+            $data = [
+                'severity'=>Mage_AdminNotification_Model_Inbox::SEVERITY_MINOR
+                ,'title'=> 'Nova versão do módulo de integração Mundipagg disponível.'
+                ,'description'=> 
+                    "Você está utilizando uma versão antiga do módulo de interação Mundipagg(v" . $oldVersion . "). Atualize para a versão v" . $newVersion . "<br>
+                    <a href='https://www.magentocommerce.com/magento-connect/mundipagg-payment-gateway.html' target='_blank'>Download Magento Connect</a><br>
+                    <a href='https://github.com/mundipagg/Magento.Integracao' target='_blank'>GitHub</a>
+                    "
+                ,'url' =>"https://www.magentocommerce.com/magento-connect/mundipagg-payment-gateway.html"
+                ,'is_read' => 0
+                ,'is_remove'=>0
+                ,'date_added'=> now()
+            ];
+            $notification->setData($data);
+            $notification->save();
+        }
+
+        private function readModuleVersion(){
+            $configXml = Mage::getBaseDir('app') . "/code/community/Uecommerce/Mundipagg/etc/config.xml";
+            if (file_exists($configXml)) {
+                $xmlObj = simplexml_load_file($configXml);
+                return $xmlObj->modules->Uecommerce_Mundipagg->version[0];
+            }else{
+                return 0;
+            }
+        }
+
+        private function getRepoVersion(){
+            $url = "https://api.github.com/repos/mundipagg/Magento.Integracao/releases";
+            $ch = curl_init();
+
+            // Header
+            curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type:application/json'));
+            curl_setopt($ch,CURLOPT_USERAGENT,'Mundipagg');
+            // Set the url, number of POST vars, POST data
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            // Execute post
+            $_response = curl_exec($ch);
+
+            if (curl_errno($ch)) {
+                $helperLog->info(curl_error($ch));
+                //Mage::log(curl_error($ch), null, 'Uecommerce_Mundipagg.log');
+            }
+            $response = (json_decode($_response));
+            return str_replace("v", "",$response[0]->tag_name);
+
+        }
+
+        
 
 }
