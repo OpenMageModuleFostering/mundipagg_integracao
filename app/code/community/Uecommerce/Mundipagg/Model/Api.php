@@ -88,7 +88,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$num = $helper->getCreditCardsNumber($data['payment_method']);
 			$installmentCount = 1;
 
-			if ($num > 1) {
+			$approvalRequest = Mage::getSingleton('checkout/session')->getApprovalRequestSuccess();
+
+			if ($num > 1 || $approvalRequest === 'partial') {
 				$creditCardOperationEnum = 'AuthOnly';
 			} else {
 				$creditCardOperationEnum = $standard->getCreditCardOperationEnum();
@@ -106,8 +108,8 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					if ($token->getId() && $token->getEntityId() == $order->getCustomerId()) {
 						$creditcardTransactionData->CreditCard->InstantBuyKey = $token->getToken();
 						$creditcardTransactionData->CreditCard->CreditCardBrand = $token->getCcType();
-						$creditcardTransactionData->CreditCardOperation = $creditCardOperationEnum;
 						/** Tipo de operação: AuthOnly | AuthAndCapture | AuthAndCaptureWithDelay  */
+						$creditcardTransactionData->CreditCardOperation = $creditCardOperationEnum;
 						$creditcardTransactionData->AmountInCents = intval(strval(($paymentData['AmountInCents']))); // Valor da transação
 						$creditcardTransactionData->InstallmentCount = $paymentData['InstallmentCount']; // Nº de parcelas
 						$creditcardTransactionData->Options->CurrencyIso = "BRL"; //Moeda do pedido
@@ -286,10 +288,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 						$result['CreateDate'] = $createDate;
 					}
 
-					/**
-					 * @TODO precisa refatorar isto, pois deste jeito esta gravando offlineretry pra que qualquer pedido
-					 * com mais de 1 cartao
-					 */
 					// save offline retry statements if this feature is enabled
 					$this->saveOfflineRetryStatements($orderReference, new DateTime($createDate));
 
@@ -352,7 +350,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			}
 		} catch (Exception $e) {
 			//Redirect to Cancel page
-
 			Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
 
 			//Log error
@@ -441,15 +438,10 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$helper = Mage::helper('mundipagg');
 
 			// Set Data
-			$_request = array();
-			$_request["Order"] = array();
+			$_request = [];
+			$_request["Order"] = [];
 			$_request["Order"]["OrderReference"] = $order->getIncrementId();
-
-//			if ($standard->getEnvironment() != 'production') {
-//				$_request["Order"]["OrderReference"] = md5(date('Y-m-d H:i:s')); // Identificação do pedido na loja
-//			}
-
-			$_request["BoletoTransactionCollection"] = array();
+			$_request["BoletoTransactionCollection"] = [];
 
 			$boletoTransactionCollection = new stdclass();
 
@@ -1395,6 +1387,13 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 						return $returnMessage;
 					}
 
+					if ($return === self::TRANSACTION_CAPTURED) {
+						$returnMessage = "OK | #{$orderReference} | {$transactionKey} | Transaction captured.";
+						$helperLog->info($returnMessage);
+
+						return $returnMessage;
+					}
+
 					// cannot capture transaction
 					$returnMessage = "KO | #{$orderReference} | {$transactionKey} | Transaction can't be captured: ";
 					$returnMessage .= $return;
@@ -1720,65 +1719,43 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 		$totalPaid += $amountToCapture;
 
+		/** @var Mage_Sales_Model_Resource_Order_Payment_Transaction_Collection $transactions */
 		$transactions = Mage::getModel('sales/order_payment_transaction')
 			->getCollection()
-			->addAttributeToFilter('order_id', array('eq' => $order->getEntityId()));
+			->addAttributeToFilter('order_id', ['eq' => $order->getEntityId()])
+			->addAttributeToFilter('txn_id', ['eq' => "{$transactionKey}-authorization"]);
 
-		foreach ($transactions as $i) {
-			$orderTransactionKey = $i->getAdditionalInformation('TransactionKey');
+		$transaction = $transactions->getFirstItem();
+		$txnsFound = count($transactions);
 
-			// transactionKey found
-			if ($orderTransactionKey == $transactionKey) {
-				$transaction = $i;
-				break;
-			}
-		}
-
-		if (is_null($transaction)) {
+		if (is_null($transactions) || $txnsFound <= 0) {
 			Mage::throwException(self::TRANSACTION_NOT_FOUND);
+		} else if ($txnsFound > 1) {
+			Mage::throwException("More than one transaction for the TransactionKey in the database");
 		}
 
 		if ($transaction->getIsClosed() == true) {
 			Mage::throwException(self::TRANSACTION_ALREADY_CAPTURED);
 		}
 
+		$order->setBaseTotalPaid($totalPaid)
+			->setTotalPaid($totalPaid)
+			->save();
+
 		$accTotalPaid = sprintf($totalPaid);
 		$accGrandTotal = sprintf($grandTotal);
 
 		switch (true) {
-
 			// total paid equal grand_total, create invoice
 			case $accTotalPaid == $accGrandTotal:
-				$invoice = null;
-
 				try {
-					$order->setBaseTotalPaid(null)
-						->setTotalPaid(null)
-						->save();
+					$invoice = $orderPayment->orderPaid($order, $this);
 
-					$invoice = $orderPayment->createInvoice($order);
+					return $invoice;
 
 				} catch (Exception $e) {
 					Mage::throwException($e->getMessage());
 				}
-
-				// close transaction
-				$transactionToClose = $this->getOrderTxnByTransactionKey($order->getId(), $transactionKey);
-
-				if (is_null($transactionToClose)) {
-					$log->warning("Transaction not found");
-				} else {
-					$payment = $order->getPayment();
-
-					$transactionToClose->setOrderPaymentObject($payment)
-						->setIsClosed(true)
-						->save();
-				}
-
-				$this->equalizeInvoiceTotals($invoice);
-
-				return $invoice;
-
 				break;
 
 			// order overpaid
@@ -1800,7 +1777,14 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					Mage::throwException("Cannot set order to underpaid: {$e->getMessage()}");
 				}
 
-				return self::ORDER_UNDERPAID;
+				$transaction->setOrderPaymentObject($order->getPayment());
+				$transaction->setIsClosed(true)->save();
+
+				if ($order->getPayment()->getMethod() === 'mundipagg_twocreditcards') {
+					return self::TRANSACTION_CAPTURED;
+				} else {
+					return self::ORDER_UNDERPAID;
+				}
 				break;
 
 			// unexpected situation
@@ -1808,11 +1792,11 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 				Mage::throwException(self::UNEXPECTED_ERROR);
 				break;
 		}
-
 	}
 
 	/**
 	 * Create invoice
+	 * @todo must be deprecated use Uecommerce_Mundipagg_Model_Order_Payment createInvoice
 	 * @return string OK|KO
 	 */
 	private function createInvoice($order, $data, $totalPaid, $status) {
@@ -1939,91 +1923,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 	}
 
 	/**
-	 * Status reference:
-	 * http://docs.mundipagg.com/docs/enumera%C3%A7%C3%B5es
-	 *
-	 * @param array $postData
-	 * @TODO refatorar o tratamento das transacoes com este metodo
-	 */
-	private function processCreditCardTransactionNotification($postData) {
-		$status = $postData['CreditCardTransaction']['CreditCardTransactionStatus'];
-		$transactionKey = $postData['CreditCardTransaction']['TransactionKey'];
-		$capturedAmountInCents = $postData['CreditCardTransaction']['CapturedAmountInCents'];
-		$ccTransactionEnum = new Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum();
-		$helperLog = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
-
-		switch ($status) {
-			case $ccTransactionEnum::AUTHORIZED_PENDING_CAPTURE:
-				break;
-
-			case $ccTransactionEnum::CAPTURED:
-				break;
-
-			case $ccTransactionEnum::PARTIAL_CAPTURE:
-				break;
-
-			case $ccTransactionEnum::NOT_AUTHORIZED:
-				break;
-
-			case $ccTransactionEnum::VOIDED:
-				break;
-
-			case $ccTransactionEnum::PENDING_VOID:
-				break;
-
-			case $ccTransactionEnum::PARTIAL_VOID:
-				break;
-
-			case $ccTransactionEnum::REFUNDED:
-				break;
-
-			case $ccTransactionEnum::PENDING_REFUND:
-				break;
-
-			case $ccTransactionEnum::PARTIAL_REFUNDED:
-				break;
-
-			case $ccTransactionEnum::WITH_ERROR:
-				break;
-
-			case $ccTransactionEnum::NOT_FOUND_ACQUIRER:
-				break;
-
-			case $ccTransactionEnum::PENDING_AUTHORIZE:
-				break;
-
-			case $ccTransactionEnum::INVALID:
-				break;
-		}
-	}
-
-	/**
-	 * @author Ruan Azevedo
-	 * @since 2016-07-20
-	 * Status reference:
-	 * http://docs.mundipagg.com/docs/enumera%C3%A7%C3%B5es
-	 * @TODO refatorar o tratamento das transacoes de boleto com este metodo
-	 */
-	private function processBoletoTransactionNotification() {
-		$status = '';
-		$boletoTransactionEnum = new Uecommerce_Mundipagg_Model_Enum_BoletoTransactionStatusEnum();
-
-		switch ($status) {
-			case $boletoTransactionEnum::GENERATED:
-				break;
-
-			case $boletoTransactionEnum::PAID:
-				break;
-
-			case $boletoTransactionEnum::UNDERPAID:
-				break;
-
-			case $boletoTransactionEnum::OVERPAID:
-				break;
-		}
-	}
-
-	/**
 	 * Mail error to Mage::getStoreConfig('trans_email/ident_custom1/email')
 	 *
 	 * @since 31-05-2016
@@ -2107,7 +2006,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 		if ($error) {
 			$helperLog->error($outputMsg, true);
-//			Mage::throwException($outputMsg);
 		}
 
 		if (is_null($sessionId)) {
@@ -2128,6 +2026,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 	/**
 	 * Method to unify the transactions requests and his logs
+	 * @todo must be deprecated, use Uecommerce_Mundipagg_Model_Api::sendJSON method
 	 *
 	 * @since 05-24-2016
 	 * @param array  $dataToPost
