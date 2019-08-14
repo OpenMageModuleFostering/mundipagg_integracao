@@ -5,7 +5,9 @@ class Uecommerce_Mundipagg_TesteController extends Uecommerce_Mundipagg_Controll
 	public function indexAction() {
 		$order = Mage::getModel('sales/order')->loadByIncrementId('100000012');
 		$payment = $order->getPayment();
+		$paymentMethod = $payment->getMethodInstance()->getCode();
 
+		var_dump($paymentMethod);
 		var_dump(get_class($payment));
 		var_dump($payment->getAdditionalInformation());
 	}
