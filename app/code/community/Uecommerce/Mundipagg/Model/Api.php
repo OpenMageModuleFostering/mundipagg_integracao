@@ -234,8 +234,8 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 				// Return errors
 				return array(
 					'error'               => 1,
-					'ErrorCode'           => '',
-					'ErrorDescription'    => '',
+					'ErrorCode'           => $helper->issetOr($errorItemCollection[0]['ErrorCode']),
+					'ErrorDescription'    => $helper->issetOr($errorItemCollection[0]['Description']),
 					'OrderKey'            => $orderKey,
 					'OrderReference'      => $orderReference,
 					'ErrorItemCollection' => $errorItemCollection,
@@ -1340,7 +1340,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					} catch (Exception $e) {
 						$errMsg = $e->getMessage();
 
-						$returnMessage = "KO | #{$orderReference} | {$transactionKey} | ";
+						$returnMessage = "OK | #{$orderReference} | {$transactionKey} | ";
 						$returnMessage .= "Can't capture transaction: {$errMsg}";
 						$helperLog->info($returnMessage);
 
@@ -1476,8 +1476,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 					} catch (Exception $e) {
 						$returnMessage = "OK | {$returnMessageLabel} | {$e->getMessage()}";
-
-						$helperLog->error($e, true);
 						$helperLog->info($returnMessage);
 
 						return $returnMessage;
@@ -1580,11 +1578,11 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					break;
 
 				case 'authorizedpendingcapture':
-					$returnMessage = "Order #{$order->getIncrementId()} | Transaction status '{$status}' received.";
+					$returnMessage = "OK | Order #{$order->getIncrementId()} | Transaction status '{$status}' received.";
 
 					$helperLog->info($returnMessage);
 
-					return "OK | {$returnMessage}";
+					return $returnMessage;
 					break;
 
 				case $statusWithError:
