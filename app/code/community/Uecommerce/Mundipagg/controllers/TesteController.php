@@ -25,12 +25,20 @@ class Uecommerce_Mundipagg_TesteController extends Uecommerce_Mundipagg_Controll
 	}
 
 	public function transactionsAction() {
-		$transactions = Mage::getModel('sales/order_payment_transaction')
-			->getCollection()
-			->addAttributeToFilter('order_id', '1');
+		$resource = Mage::getSingleton('core/resource');
+		$conn = $resource->getConnection('core_write');
+		$query = '
+		UPDATE sales_payment_transaction
+		SET is_closed = 0
+		WHERE transaction_id = 75
+		';
 
-		foreach ($transactions as $transaction) {
-			var_dump($transaction->getData());
+		try {
+			$conn->query($query);
+			echo 'success';
+
+		} catch (Exception $e) {
+			echo "Error: " . $e->getMessage();
 		}
 	}
 
@@ -51,7 +59,58 @@ class Uecommerce_Mundipagg_TesteController extends Uecommerce_Mundipagg_Controll
 //		}
 	}
 
-	public function checkoutAction() {
+	public function notificationsAction() {
+		$model = Mage::getModel('adminnotification/inbox')
+			->getCollection()
+			->addFilter('url', 'https://www.magentocommerce.com/magento-connect/mundipagg-payment-gateway.html')
+			->setOrder('date_added', 'desc')
+			->getLastItem();
+
+		var_dump($model->getData());
+
+//		foreach ($model->getCollection() as $item) {
+//			var_dump($item->getData());
+//		}
+
+	}
+
+	public function lastNotifAction() {
+		$model = new Uecommerce_Mundipagg_Model_Admin_Notification();
+		$data = $model->getLastSavedNotification();
+
+		var_dump($data->getData());
+
+	}
+
+	public function testeRedirectAction() {
+		$this->_redirect('mundipagg/standard/cancel');
+	}
+
+	public function attributeAction() {
+		$attributeCodes = array('mundipagg_frequency_enum', 'mundipagg_recurrences');
+
+		foreach ($attributeCodes as $attributeCode) {
+			try {
+				$attribute = new Mage_Eav_Model_Entity_Attribute();
+				$attribute->loadByCode(Mage_Catalog_Model_Product::ENTITY, $attributeCode);
+
+				$attribute->setIsRequired(false);
+				$attribute->save();
+
+				var_dump($attribute->getData());
+
+			} catch (Exception $e) {
+				echo $e->getMessage();
+
+				return;
+			}
+		}
+	}
+
+	public function invoiceAction() {
+		$invoice = Mage::getModel('sales/order_invoice')->loadByIncrementId(100000003);
+
+		var_dump($invoice->getData());
 
 	}
 
