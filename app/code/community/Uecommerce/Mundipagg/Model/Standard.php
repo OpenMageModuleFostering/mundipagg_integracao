@@ -692,7 +692,7 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 //			$data['CreditCardTransactionCollection']['AmountInCents'] = $payment->getOrder()->getBaseGrandTotal() * 100;
 //			$data['CreditCardTransactionCollection']['TransactionKey'] = $TransactionKey;
 //			$data['CreditCardTransactionCollection']['TransactionReference'] = $TransactionReference;
-			$orderkeys = (array) $payment->getAdditionalInformation('OrderKey');
+			$orderkeys = (array)$payment->getAdditionalInformation('OrderKey');
 
 			foreach ($orderkeys as $orderkey) {
 				$data['OrderKey'] = $orderkey;
@@ -1175,8 +1175,23 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 			// Payment gateway error
 			if (isset($approvalRequest['error'])) {
 
-				// Partial payment
+				if (isset($approvalRequest['ErrorItemCollection'])) {
+					$errorItemCollection = $approvalRequest['ErrorItemCollection'];
+
+					if (isset($errorItemCollection['ErrorItem']['ErrorCode'])) {
+						$errorCode = $errorItemCollection['ErrorItem']['ErrorCode'];
+
+						if ($errorCode == '504') {
+							$statusWithError = Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum::WITH_ERROR;
+							Mage::getSingleton('checkout/session')->setApprovalRequestSuccess($statusWithError);
+
+							return $approvalRequest;
+						}
+					}
+				}
+
 				if (isset($approvalRequest['ErrorCode']) && $approvalRequest['ErrorCode'] == 'multi') {
+					// Partial payment
 
 					// We set authorized amount
 					$orderGrandTotal = $order->getGrandTotal();
@@ -1204,7 +1219,6 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 						$order->save();
 
 					} else {
-						$helperLog->info("TESTE1: cancel");
 						Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
 					}
 				} else {
@@ -1731,12 +1745,18 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 	 * @return void
 	 */
 	public function getOrderPlaceRedirectUrl() {
+		$statusWithError = Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum::WITH_ERROR;
+
 		switch (Mage::getSingleton('checkout/session')->getApprovalRequestSuccess()) {
 			case 'debit':
 				$redirectUrl = Mage::getSingleton('checkout/session')->getBankRedirectUrl();
 				break;
 
 			case 'success':
+				$redirectUrl = Mage::getUrl('mundipagg/standard/success', array('_secure' => true));
+				break;
+
+			case $statusWithError:
 				$redirectUrl = Mage::getUrl('mundipagg/standard/success', array('_secure' => true));
 				break;
 
@@ -1880,15 +1900,22 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 		}
 
 		foreach ($transactionAdditionalInfo as $transKey => $value) {
+
 			if (!is_array($value)) {
 				$transaction->setAdditionalInformation($transKey, htmlspecialchars_decode($value));
-
 				$payment->setAdditionalInformation($num . '_' . $transKey, htmlspecialchars_decode($value));
-			} else {
-				foreach ($value as $key2 => $value2) {
-					$transaction->setAdditionalInformation($key2, htmlspecialchars_decode($value2));
 
-					$payment->setAdditionalInformation($num . '_' . $key2, htmlspecialchars_decode($value2));
+			} else {
+
+				if (empty($value)) {
+					$transaction->setAdditionalInformation($transKey, '');
+					$payment->setAdditionalInformation($num . '_' . $transKey, '');
+
+				} else {
+					foreach ($value as $key2 => $value2) {
+						$transaction->setAdditionalInformation($key2, htmlspecialchars_decode($value2));
+						$payment->setAdditionalInformation($num . '_' . $key2, htmlspecialchars_decode($value2));
+					}
 				}
 			}
 		}
@@ -1927,6 +1954,32 @@ class Uecommerce_Mundipagg_Model_Standard extends Mage_Payment_Model_Method_Abst
 			$helperLog->info("{$logLabel} | Payment not authorized and order is not on offline retry.");
 			Mage::getSingleton('checkout/session')->setApprovalRequestSuccess('cancel');
 		}*/
+	}
+
+	/**
+	 * @param Mage_Sales_Model_Order $order
+	 * @throws Exception
+	 */
+	public static function transactionWithError(Mage_Sales_Model_Order $order, $comment = true) {
+		try {
+			if ($comment) {
+				$order->setState(
+					'pending',
+					'mundipagg_with_error',
+					'With Error',
+					false
+				);
+			} else {
+				$order->setStatus('mundipagg_with_error');
+			}
+
+			$order->save();
+
+		} catch (Exception $e) {
+			$errMsg = "Unable to modify order status to 'mundipagg_with_error: {$e->getMessage()}";
+
+			throw new Exception($errMsg);
+		}
 	}
 
 }

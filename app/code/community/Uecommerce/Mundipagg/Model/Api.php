@@ -1298,6 +1298,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$recurrence = Mage::getModel('mundipagg/recurrency');
 			$recurrence->checkRecurrencesByOrder($order);
 
+			$statusWithError = Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum::WITH_ERROR;
+			$statusWithError = strtolower($statusWithError);
+
 			$lowerStatus = strtolower($status);
 
 			switch ($lowerStatus) {
@@ -1542,6 +1545,21 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					$helperLog->info($returnMessage);
 
 					return "OK | {$returnMessage}";
+					break;
+
+				case $statusWithError:
+					try {
+						Uecommerce_Mundipagg_Model_Standard::transactionWithError($order, false);
+						$returnMessage = "OK | {$returnMessageLabel} | Order changed to WithError status";
+
+					} catch (Exception $e) {
+						$returnMessage = "KO | {$returnMessageLabel} | {$e->getMessage()}";
+					}
+
+					$helperLog->info($returnMessage);
+
+					return $returnMessage;
+
 					break;
 
 				// For other status we add comment to history
@@ -1903,7 +1921,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 		$fromEmail = Mage::getStoreConfig('trans_email/ident_sales/email');
 		$toEmail = Mage::getStoreConfig('trans_email/ident_custom1/email');
 		$toName = Mage::getStoreConfig('trans_email/ident_custom1/name');
-		$bcc = array('ruan.azevedo@gmail.com', 'razevedo@mundipagg.com');
+		$bcc = array('razevedo@mundipagg.com');
 		$subject = 'Error Report - MundiPagg Magento Integration';
 		$body = "Error Report from: {$_SERVER['HTTP_HOST']}<br><br>{$message}";
 

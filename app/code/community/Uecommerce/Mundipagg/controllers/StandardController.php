@@ -316,6 +316,22 @@ class Uecommerce_Mundipagg_StandardController extends Mage_Core_Controller_Front
 	public function successAction() {
 		$session = Mage::getSingleton('checkout/session');
 		$approvalRequestSuccess = $session->getApprovalRequestSuccess();
+		$statusWithError = Uecommerce_Mundipagg_Model_Enum_CreditCardTransactionStatusEnum::WITH_ERROR;
+
+		if ($approvalRequestSuccess == $statusWithError) {
+			$lastOrderId = Mage::getSingleton('checkout/session')->getLastOrderId();
+			$order = Mage::getModel('sales/order')->load($lastOrderId);
+
+			try{
+				Uecommerce_Mundipagg_Model_Standard::transactionWithError($order);
+
+			} catch (Exception $e){
+				$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
+				$log->error($e->getMessage());
+			}
+
+			$approvalRequestSuccess = 'success';
+		}
 
 		if (!$this->getRequest()->isPost() && ($approvalRequestSuccess == 'success' || $approvalRequestSuccess == 'debit')) {
 			if (!$session->getLastSuccessQuoteId()) {
