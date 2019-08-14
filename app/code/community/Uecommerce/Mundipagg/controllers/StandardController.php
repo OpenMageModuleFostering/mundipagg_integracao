@@ -34,13 +34,6 @@ class Uecommerce_Mundipagg_StandardController extends Mage_Core_Controller_Front
 	 */
 	protected $_order;
 
-	function indexAction() {
-		$request = $this->getRequest();
-		$post = $request->getPost();
-
-		echo 'ok!';
-	}
-
 	public function getOrder() {
 		if ($this->_order == null) {
 
