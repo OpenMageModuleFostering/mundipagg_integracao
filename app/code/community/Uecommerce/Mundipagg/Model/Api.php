@@ -57,21 +57,10 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 		$helper = Mage::helper('mundipagg');
 
 		try {
-			// Installments configuration
-			$installment = $standard->getParcelamento();
-			$qtdParcelasMax = $standard->getParcelamentoMax();
-
-			// Get Webservice URL
-			$url = $standard->getURL();
-
 			// Set Data
 			$_request = array();
 			$_request["Order"] = array();
 			$_request["Order"]["OrderReference"] = $order->getIncrementId();
-
-//			if ($standard->getEnvironment() != 'production') {
-//				$_request["Order"]["OrderReference"] = md5(date('Y-m-d H:i:s')); // Identificação do pedido na loja
-//			}
 
 			/*
 			* Append transaction (multi credit card payments)
@@ -86,7 +75,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 			/* @var $recurrencyModel Uecommerce_Mundipagg_Model_Recurrency */
 			$recurrencyModel = Mage::getModel('mundipagg/recurrency');
-
 			$creditcardTransactionCollection = array();
 
 			// Partial Payment (we use this reference in order to authorize the rest of the amount)
@@ -97,10 +85,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$baseGrandTotal = str_replace(',', '.', $order->getBaseGrandTotal());
 			$amountInCentsVar = intval(strval(($baseGrandTotal * 100)));
 
-			// CreditCardOperationEnum : if more than one payment method we use AuthOnly and then capture if all are ok
-
 			$num = $helper->getCreditCardsNumber($data['payment_method']);
-
 			$installmentCount = 1;
 
 			if ($num > 1) {
@@ -1185,6 +1170,59 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 	}
 
 	/**
+	 * call MundiPagg endpoint '/Sale/Capture'
+	 *
+	 * @param array  $data
+	 * @param string $orderReference
+	 * @return array
+	 */
+	public function saleCapture($data, $orderReference) {
+		$log = new Uecommerce_Mundipagg_Helper_Log(__METHOD__);
+		$log->setLogLabel("#{$orderReference}");
+
+		// Get Webservice URL
+		$url = "{$this->modelStandard->getURL()}Capture";
+
+		// Get store key
+		$key = $this->modelStandard->getmerchantKey();
+		$dataToPost = json_encode($data);
+
+		/* @var Uecommerce_Mundipagg_Helper_Data $helper */
+		$helper = Mage::helper('mundipagg');
+
+		$log->debug("Url: {$url}");
+		$log->info("Request:\n{$helper->jsonEncodePretty($data)}\n");
+
+		// Send payment data to MundiPagg
+		$ch = curl_init();
+
+		// Header
+		curl_setopt($ch, CURLOPT_HTTPHEADER, [
+			'Content-Type: application/json',
+			"MerchantKey: {$key}",
+			'Accept: application/json'
+		]);
+
+		// Set the url, number of POST vars, POST data
+		curl_setopt($ch, CURLOPT_URL, $url);
+		curl_setopt($ch, CURLOPT_POSTFIELDS, $dataToPost);
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+		// Execute post
+		$response = curl_exec($ch);
+		$response = json_decode($response, true);
+		$jsonPretty = $helper->jsonEncodePretty($response);
+
+		// Close connection
+		curl_close($ch);
+
+		$log->info("Response:\n{$jsonPretty}\n");
+
+		// Return
+		return $response;
+	}
+
+	/**
 	 * Process order
 	 * @param $order
 	 * @param $data
@@ -1226,7 +1264,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 
 				$helperLog->info("OrderReference: {$orderReference} | {$returnMessage}");
 
-				return "KO | {$returnMessage}";
+				return "OK | {$returnMessage}";
 			}
 
 			$transactionData = null;
@@ -1269,6 +1307,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					}
 
 					try {
+						// set flag to prevent send back a cancelation to Mundi via API
+						$this->setCanceledByNotificationFlag($order, true);
+
 						$this->tryCancelOrder($order, "Transaction update received: {$status}");
 						$returnMessage = "OK | {$returnMessageLabel} | Canceled successfully";
 						$helperLog->info($returnMessage);
@@ -1305,7 +1346,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			$t = $this->getLocalTransactionsQty($order->getId(), $transactionKey);
 
 			if ($t <= 0) {
-				$errMsg = "KO | Order #{$orderReference} | TransactionKey {$transactionKey} not found for this order";
+				$errMsg = "OK | Order #{$orderReference} | TransactionKey {$transactionKey} not found for this order";
 				$helperLog->info($errMsg);
 
 				return $errMsg;
@@ -1357,6 +1398,8 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					// cannot capture transaction
 					$returnMessage = "KO | #{$orderReference} | {$transactionKey} | Transaction can't be captured: ";
 					$returnMessage .= $return;
+
+					$helperLog->info($returnMessage);
 
 					return $returnMessage;
 					break;
@@ -1472,6 +1515,9 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 					}
 
 					try {
+						// set flag to prevent send back a cancelation to Mundi via API
+						$this->setCanceledByNotificationFlag($order, true);
+
 						$this->tryCancelOrder($order);
 
 					} catch (Exception $e) {
@@ -1706,7 +1752,12 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 				$invoice = null;
 
 				try {
+					$order->setBaseTotalPaid(null)
+						->setTotalPaid(null)
+						->save();
+
 					$invoice = $orderPayment->createInvoice($order);
+
 				} catch (Exception $e) {
 					Mage::throwException($e->getMessage());
 				}
@@ -1723,6 +1774,8 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 						->setIsClosed(true)
 						->save();
 				}
+
+				$this->equalizeInvoiceTotals($invoice);
 
 				return $invoice;
 
@@ -1742,7 +1795,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 			// order underpaid
 			case $accTotalPaid < $accGrandTotal:
 				try {
-					$orderPayment->orderUnderPaid($order);
+					$orderPayment->orderUnderPaid($order, $amountToCapture);
 				} catch (Exception $e) {
 					Mage::throwException("Cannot set order to underpaid: {$e->getMessage()}");
 				}
@@ -1755,10 +1808,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 				Mage::throwException(self::UNEXPECTED_ERROR);
 				break;
 		}
-
-	}
-
-	private function queryTransactions() {
 
 	}
 
@@ -1977,7 +2026,6 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 	/**
 	 * Mail error to Mage::getStoreConfig('trans_email/ident_custom1/email')
 	 *
-	 * @author Ruan Azevedo <razevedo@mundipagg.com>
 	 * @since 31-05-2016
 	 * @param string $message
 	 */
@@ -1987,7 +2035,7 @@ class Uecommerce_Mundipagg_Model_Api extends Uecommerce_Mundipagg_Model_Standard
 		$fromEmail = Mage::getStoreConfig('trans_email/ident_sales/email');
 		$toEmail = Mage::getStoreConfig('trans_email/ident_custom1/email');
 		$toName = Mage::getStoreConfig('trans_email/ident_custom1/name');
-		$bcc = array('razevedo@mundipagg.com');
+		$bcc = [];
 		$subject = 'Error Report - MundiPagg Magento Integration';
 		$body = "Error Report from: {$_SERVER['HTTP_HOST']}<br><br>{$message}";
 
